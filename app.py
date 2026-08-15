@@ -1,33 +1,44 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 from datetime import datetime, date
 import plotly.express as px
 import plotly.graph_objects as go
+from sqlalchemy import create_engine, text
 
 # ----------------- APP CONFIG -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
 
 # ----------------- DB SETUP -----------------
-DB_FILE = "photobooth.db"
+# Streamlit secrets lookup for Cloud deployment, fallback to SQLite locally
+if "DATABASE_URL" in st.secrets:
+    DB_URL = st.secrets["DATABASE_URL"]
+    IS_POSTGRES = True
+else:
+    DB_URL = "sqlite:///photobooth.db"
+    IS_POSTGRES = False
 
-def get_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+engine = create_engine(DB_URL, pool_pre_ping=True)
 
 def init_db():
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
+    with engine.begin() as conn:
+        if IS_POSTGRES:
+            days_id_def = "id SERIAL PRIMARY KEY"
+            tx_id_def = "id SERIAL PRIMARY KEY"
+            inv_id_def = "id SERIAL PRIMARY KEY"
+        else:
+            days_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+            tx_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+            inv_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+            
+        conn.execute(text(f'''
             CREATE TABLE IF NOT EXISTS days (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                {days_id_def},
                 date TEXT UNIQUE NOT NULL
             )
-        ''')
-        cursor.execute('''
+        '''))
+        conn.execute(text(f'''
             CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                {tx_id_def},
                 day_id INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
                 prints_count INTEGER NOT NULL,
@@ -35,62 +46,77 @@ def init_db():
                 branch TEXT NOT NULL,
                 FOREIGN KEY (day_id) REFERENCES days(id)
             )
-        ''')
-        cursor.execute('''
+        '''))
+        conn.execute(text(f'''
             CREATE TABLE IF NOT EXISTS inventory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                {inv_id_def},
                 timestamp TEXT NOT NULL,
                 action_type TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 notes TEXT,
                 branch TEXT NOT NULL
             )
-        ''')
-        conn.commit()
+        '''))
 
 init_db()
 
 # ----------------- DB HELPER FUNCTIONS -----------------
 def get_current_stock(branch: str):
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COALESCE(SUM(quantity), 0) as total FROM inventory WHERE branch = ?", (branch,))
-        return cursor.fetchone()["total"]
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT COALESCE(SUM(quantity), 0) as total FROM inventory WHERE branch = :branch"), 
+            {"branch": branch}
+        ).fetchone()
+        return result[0] if result else 0
 
 def add_stock(branch: str, quantity: int, notes: str = ""):
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
+    with engine.begin() as conn:
+        conn.execute(text('''
             INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-            VALUES (?, 'restock', ?, ?, ?)
-        ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), quantity, notes, branch))
-        conn.commit()
+            VALUES (:ts, 'restock', :qty, :notes, :branch)
+        '''), {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "qty": quantity,
+            "notes": notes,
+            "branch": branch
+        })
 
 def record_transaction(branch: str, prints_count: int, amount_paid: float):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     today_str = str(date.today())
     
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM days WHERE date = ?", (today_str,))
-        row = cursor.fetchone()
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": today_str}).fetchone()
         if not row:
-            cursor.execute("INSERT INTO days (date) VALUES (?)", (today_str,))
-            day_id = cursor.lastrowid
+            if IS_POSTGRES:
+                res = conn.execute(text("INSERT INTO days (date) VALUES (:date) RETURNING id"), {"date": today_str}).fetchone()
+                day_id = res[0]
+            else:
+                conn.execute(text("INSERT INTO days (date) VALUES (:date)"), {"date": today_str})
+                res = conn.execute(text("SELECT last_insert_rowid()")).fetchone()
+                day_id = res[0]
         else:
-            day_id = row["id"]
+            day_id = row[0]
             
-        cursor.execute('''
+        conn.execute(text('''
             INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (day_id, now_str, prints_count, amount_paid, branch))
+            VALUES (:day_id, :ts, :prints, :amount, :branch)
+        '''), {
+            "day_id": day_id,
+            "ts": now_str,
+            "prints": prints_count,
+            "amount": amount_paid,
+            "branch": branch
+        })
         
-        cursor.execute('''
+        conn.execute(text('''
             INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-            VALUES (?, 'consumption', ?, 'Transaction consumption', ?)
-        ''', (now_str, -prints_count, branch))
-        
-        conn.commit()
+            VALUES (:ts, 'consumption', :qty, 'Transaction consumption', :branch)
+        '''), {
+            "ts": now_str,
+            "qty": -prints_count,
+            "branch": branch
+        })
 
 # ----------------- AUTHENTICATION -----------------
 if 'logged_in' not in st.session_state:
@@ -245,15 +271,19 @@ if role == "employee":
 
     st.markdown("---")
     st.subheader("📋 آخر 5 عمليات مسجلة اليوم")
-    with get_db() as conn:
+    with engine.connect() as conn:
         today_str = str(date.today())
-        today_tx = pd.read_sql_query('''
+        today_tx = pd.read_sql_query(
+            text('''
             SELECT t.timestamp as "الوقت", t.prints_count as "عدد الورق", t.amount_paid as "المبلغ (ج.م)"
             FROM transactions t
             JOIN days d ON t.day_id = d.id
-            WHERE d.date = ? AND t.branch = ?
+            WHERE d.date = :date AND t.branch = :branch
             ORDER BY t.timestamp DESC LIMIT 5
-        ''', conn, params=(today_str, branch))
+            '''), 
+            conn, 
+            params={"date": today_str, "branch": branch}
+        )
         if not today_tx.empty:
             st.dataframe(today_tx, use_container_width=True, hide_index=True)
         else:
@@ -267,12 +297,12 @@ elif role == "admin":
     selected_branch = st.sidebar.selectbox("اختر الفرع للتحليل:", ["الكل", "Heaven", "9A"])
     
     branch_filter_tx = ""
-    branch_params = []
+    branch_params = {}
     if selected_branch != "الكل":
-        branch_filter_tx = "WHERE t.branch = ?"
-        branch_params = [selected_branch]
+        branch_filter_tx = "WHERE t.branch = :branch"
+        branch_params = {"branch": selected_branch}
         
-    with get_db() as conn:
+    with engine.connect() as conn:
         query_all_tx = f'''
             SELECT t.*, d.date 
             FROM transactions t
@@ -280,7 +310,7 @@ elif role == "admin":
             {branch_filter_tx}
             ORDER BY t.timestamp ASC
         '''
-        all_tx_df = pd.read_sql_query(query_all_tx, conn, params=branch_params)
+        all_tx_df = pd.read_sql_query(text(query_all_tx), conn, params=branch_params)
         
         if not all_tx_df.empty:
             days_df = all_tx_df.groupby('date').agg(
