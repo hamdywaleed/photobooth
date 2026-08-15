@@ -256,12 +256,14 @@ if role == "employee":
     with col_manual:
         with st.expander("⚙️ إدخال يدوي", expanded=False):
             with st.form("manual_form", clear_on_submit=True):
-                prints = st.number_input("عدد الورق المطبوع", min_value=1, max_value=50, value=1, step=1)
-                amount = st.number_input("المبلغ المدفوع", min_value=0.0, value=0.0, step=10.0)
+                prints = st.number_input("عدد الورق المطبوع", min_value=1, max_value=50, value=None, step=1, placeholder="أدخل عدد الورق...")
+                amount = st.number_input("المبلغ المدفوع", min_value=0.0, value=None, step=10.0, placeholder="أدخل المبلغ...")
                 submit_btn = st.form_submit_button("✅ تسجيل يدوياً", use_container_width=True)
                 
                 if submit_btn:
-                    if current_stock < prints:
+                    if prints is None or amount is None:
+                        st.error("⚠️ يرجى إدخال عدد الورق والمبلغ أولاً!")
+                    elif current_stock < prints:
                         st.error("⚠️ رصيد الورق المتاح غير كافٍ!")
                     else:
                         record_transaction(branch, prints, amount)
@@ -271,7 +273,7 @@ if role == "employee":
     with col_restock:
         with st.expander("📦 إضافة ورق للمخزون", expanded=False):
             with st.form("restock_form", clear_on_submit=True):
-                restock_qty = st.number_input("عدد الورق المضاف", min_value=1, max_value=5000, value=100, step=50)
+                restock_qty = st.number_input("عدد الورق المضاف", min_value=1, max_value=5000, value=None, step=50, placeholder="أدخل الكمية...")
                 notes = st.text_input("ملاحظات", "")
                 restock_btn = st.form_submit_button("➕ تزويد المخزون", use_container_width=True)
                 
