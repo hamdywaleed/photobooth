@@ -8,6 +8,14 @@ from sqlalchemy import create_engine, text
 # ----------------- APP CONFIG -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
 
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
+
 # ----------------- DB SETUP -----------------
 # Streamlit secrets lookup for Cloud deployment, fallback to SQLite locally
 try:
@@ -163,7 +171,6 @@ def logout():
     st.session_state.logged_in = False
     st.session_state.role = None
     st.session_state.branch = None
-    st.rerun()
 
 if not st.session_state.logged_in:
     login()
