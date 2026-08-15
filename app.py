@@ -10,10 +10,14 @@ st.set_page_config(page_title="Photobooth Management System", page_icon="📸", 
 
 # ----------------- DB SETUP -----------------
 # Streamlit secrets lookup for Cloud deployment, fallback to SQLite locally
-if "DATABASE_URL" in st.secrets:
-    DB_URL = st.secrets["DATABASE_URL"]
-    IS_POSTGRES = True
-else:
+try:
+    if "DATABASE_URL" in st.secrets:
+        DB_URL = st.secrets["DATABASE_URL"]
+        IS_POSTGRES = True
+    else:
+        DB_URL = "sqlite:///photobooth.db"
+        IS_POSTGRES = False
+except Exception:
     DB_URL = "sqlite:///photobooth.db"
     IS_POSTGRES = False
 
@@ -444,3 +448,52 @@ elif role == "admin":
             st.warning("لا توجد بيانات مسجلة في الفترة المحددة.")
     else:
         st.info("لا توجد بيانات كافية لعرض الرسوم البيانية بعد.")
+
+    # --- BACKUP SECTION ---
+    st.markdown("---")
+    st.subheader("📥 النسخ الاحتياطي للبيانات (Backup)")
+    st.caption("تقدر تحمل كل بيانات المبيعات بتاعتك في أي وقت كملف إكسيل (CSV) عشان تحتفظ بيها على جهازك.")
+    
+    with engine.connect() as conn:
+        all_backup_tx = pd.read_sql_query(text('''
+            SELECT t.timestamp as "الوقت", d.date as "التاريخ", t.prints_count as "عدد الورق", 
+                   t.amount_paid as "المبلغ (ج.م)", t.branch as "الفرع"
+            FROM transactions t
+            JOIN days d ON t.day_id = d.id
+            ORDER BY t.timestamp DESC
+        '''), conn)
+        
+    if not all_backup_tx.empty:
+        col_b1, col_b2, col_b3 = st.columns(3)
+        
+        # utf-8-sig is crucial for Arabic support in Excel
+        csv_all = all_backup_tx.to_csv(index=False).encode('utf-8-sig')
+        col_b1.download_button(
+            label="📥 تحميل المبيعات مجمعة (الكل)",
+            data=csv_all,
+            file_name=f"all_branches_backup_{date.today()}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        
+        df_heaven = all_backup_tx[all_backup_tx["الفرع"] == "Heaven"]
+        if not df_heaven.empty:
+            csv_heaven = df_heaven.to_csv(index=False).encode('utf-8-sig')
+            col_b2.download_button(
+                label="📥 مبيعات فرع Heaven",
+                data=csv_heaven,
+                file_name=f"heaven_backup_{date.today()}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            
+        df_9a = all_backup_tx[all_backup_tx["الفرع"] == "9A"]
+        if not df_9a.empty:
+            csv_9a = df_9a.to_csv(index=False).encode('utf-8-sig')
+            col_b3.download_button(
+                label="📥 مبيعات فرع 9A",
+                data=csv_9a,
+                file_name=f"9a_backup_{date.today()}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
