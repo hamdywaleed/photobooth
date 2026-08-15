@@ -1,0 +1,416 @@
+import streamlit as st
+import pandas as pd
+import sqlite3
+from datetime import datetime, date
+import plotly.express as px
+import plotly.graph_objects as go
+
+# ----------------- APP CONFIG -----------------
+st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
+
+# ----------------- DB SETUP -----------------
+DB_FILE = "photobooth.db"
+
+def get_db():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS days (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT UNIQUE NOT NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day_id INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                prints_count INTEGER NOT NULL,
+                amount_paid REAL NOT NULL,
+                branch TEXT NOT NULL,
+                FOREIGN KEY (day_id) REFERENCES days(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                notes TEXT,
+                branch TEXT NOT NULL
+            )
+        ''')
+        conn.commit()
+
+init_db()
+
+# ----------------- DB HELPER FUNCTIONS -----------------
+def get_current_stock(branch: str):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COALESCE(SUM(quantity), 0) as total FROM inventory WHERE branch = ?", (branch,))
+        return cursor.fetchone()["total"]
+
+def add_stock(branch: str, quantity: int, notes: str = ""):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (?, 'restock', ?, ?, ?)
+        ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), quantity, notes, branch))
+        conn.commit()
+
+def record_transaction(branch: str, prints_count: int, amount_paid: float):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    today_str = str(date.today())
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM days WHERE date = ?", (today_str,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.execute("INSERT INTO days (date) VALUES (?)", (today_str,))
+            day_id = cursor.lastrowid
+        else:
+            day_id = row["id"]
+            
+        cursor.execute('''
+            INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (day_id, now_str, prints_count, amount_paid, branch))
+        
+        cursor.execute('''
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (?, 'consumption', ?, 'Transaction consumption', ?)
+        ''', (now_str, -prints_count, branch))
+        
+        conn.commit()
+
+# ----------------- AUTHENTICATION -----------------
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'role' not in st.session_state:
+    st.session_state.role = None
+if 'branch' not in st.session_state:
+    st.session_state.branch = None
+
+def login():
+    st.markdown("<h1 style='text-align: center;'>🔐 تسجيل الدخول للأنظمة</h1>", unsafe_allow_html=True)
+    st.markdown("---")
+    
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        with st.form("login_form"):
+            password = st.text_input("أدخل كلمة المرور:", type="password")
+            submit = st.form_submit_button("تسجيل الدخول", use_container_width=True)
+            
+            if submit:
+                if password == "14161837":
+                    st.session_state.logged_in = True
+                    st.session_state.role = "employee"
+                    st.session_state.branch = "Heaven"
+                    st.rerun()
+                elif password == "85879134":
+                    st.session_state.logged_in = True
+                    st.session_state.role = "employee"
+                    st.session_state.branch = "9A"
+                    st.rerun()
+                elif password == "20072001":
+                    st.session_state.logged_in = True
+                    st.session_state.role = "admin"
+                    st.session_state.branch = "All"
+                    st.rerun()
+                else:
+                    st.error("كلمة المرور غير صحيحة!")
+
+def logout():
+    st.session_state.logged_in = False
+    st.session_state.role = None
+    st.session_state.branch = None
+    st.rerun()
+
+if not st.session_state.logged_in:
+    login()
+    st.stop()
+
+# ----------------- SIDEBAR -----------------
+st.sidebar.markdown(f"### 👋 مرحباً، {st.session_state.branch if st.session_state.role == 'employee' else 'المدير'}")
+st.sidebar.button("🚪 تسجيل الخروج", on_click=logout, use_container_width=True)
+st.sidebar.markdown("---")
+
+role = st.session_state.role
+branch = st.session_state.branch
+
+# ================= 1. EMPLOYEE SCREEN =================
+if role == "employee":
+    current_stock = get_current_stock(branch)
+    st.sidebar.metric(f"📦 رصيد الورق", f"{current_stock} ورقة")
+    
+    st.markdown("""
+        <style>
+        div[data-testid="stButton"] > button {
+            height: 120px !important;
+            font-size: 22px !important;
+            font-weight: 800 !important;
+            border-radius: 12px;
+            border: 2px solid #e0e0e0;
+            transition: all 0.2s ease;
+            white-space: pre-wrap !important;
+        }
+        div[data-testid="stButton"] > button:hover {
+            border-color: #ff4b4b;
+            color: #ff4b4b;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 75, 75, 0.15);
+        }
+        div[data-testid="stForm"] button {
+            height: 80px !important;
+            font-size: 18px !important;
+        }
+        div[data-testid="stNumberInput"] label {
+            font-size: 18px !important;
+            font-weight: bold !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.title(f"📸 فرع {branch} - المبيعات السريعة")
+    st.caption("أزرار كبيرة لتسجيل المبيعات بضغطة واحدة وبأسرع وقت.")
+    
+    st.subheader("⚡ باقات التصوير الأساسية")
+    btn_col1, btn_col2, btn_col3 = st.columns(3)
+    
+    with btn_col1:
+        if st.button("🖼️ صورة فردي\n(50 ج.م - 1 ورقة)", use_container_width=True):
+            if current_stock < 1:
+                st.error("⚠️ رصيد الورق غير كافٍ!")
+            else:
+                record_transaction(branch, 1, 50.0)
+                st.success("✅ تم التسجيل!")
+                st.rerun()
+                
+    with btn_col2:
+        if st.button("🎞️ كارت ثلاثي\n(90 ج.م - 2 ورقة)", use_container_width=True):
+            if current_stock < 2:
+                st.error("⚠️ رصيد الورق غير كافٍ!")
+            else:
+                record_transaction(branch, 2, 90.0)
+                st.success("✅ تم التسجيل!")
+                st.rerun()
+                
+    with btn_col3:
+        if st.button("📸 كارت رباعي\n(120 ج.م - 3 ورقات)", use_container_width=True):
+            if current_stock < 3:
+                st.error("⚠️ رصيد الورق غير كافٍ!")
+            else:
+                record_transaction(branch, 3, 120.0)
+                st.success("✅ تم التسجيل!")
+                st.rerun()
+
+    st.markdown("<br><hr><br>", unsafe_allow_html=True)
+    col_manual, col_restock = st.columns(2)
+    
+    with col_manual:
+        with st.expander("⚙️ إدخال يدوي", expanded=False):
+            with st.form("manual_form", clear_on_submit=True):
+                prints = st.number_input("عدد الورق المطبوع", min_value=1, max_value=50, value=1, step=1)
+                amount = st.number_input("المبلغ المدفوع", min_value=0.0, value=0.0, step=10.0)
+                submit_btn = st.form_submit_button("✅ تسجيل يدوياً", use_container_width=True)
+                
+                if submit_btn:
+                    if current_stock < prints:
+                        st.error("⚠️ رصيد الورق المتاح غير كافٍ!")
+                    else:
+                        record_transaction(branch, prints, amount)
+                        st.success("تم التسجيل يدوياً!")
+                        st.rerun()
+
+    with col_restock:
+        with st.expander("📦 إضافة ورق للمخزون", expanded=False):
+            with st.form("restock_form", clear_on_submit=True):
+                restock_qty = st.number_input("عدد الورق المضاف", min_value=1, max_value=5000, value=100, step=50)
+                notes = st.text_input("ملاحظات", "")
+                restock_btn = st.form_submit_button("➕ تزويد المخزون", use_container_width=True)
+                
+                if restock_btn:
+                    add_stock(branch, restock_qty, notes)
+                    st.success("تم التزويد بنجاح!")
+                    st.rerun()
+
+    st.markdown("---")
+    st.subheader("📋 آخر 5 عمليات مسجلة اليوم")
+    with get_db() as conn:
+        today_str = str(date.today())
+        today_tx = pd.read_sql_query('''
+            SELECT t.timestamp as "الوقت", t.prints_count as "عدد الورق", t.amount_paid as "المبلغ (ج.م)"
+            FROM transactions t
+            JOIN days d ON t.day_id = d.id
+            WHERE d.date = ? AND t.branch = ?
+            ORDER BY t.timestamp DESC LIMIT 5
+        ''', conn, params=(today_str, branch))
+        if not today_tx.empty:
+            st.dataframe(today_tx, use_container_width=True, hide_index=True)
+        else:
+            st.info("لا توجد عمليات مسجلة اليوم في هذا الفرع حتى الآن.")
+
+# ================= 2. ADMIN DASHBOARD =================
+elif role == "admin":
+    st.title("📊 لوحة تحكم الإدارة (Admin Analytics)")
+    
+    st.sidebar.subheader("🏢 فلتر الفرع")
+    selected_branch = st.sidebar.selectbox("اختر الفرع للتحليل:", ["الكل", "Heaven", "9A"])
+    
+    branch_filter_tx = ""
+    branch_params = []
+    if selected_branch != "الكل":
+        branch_filter_tx = "WHERE t.branch = ?"
+        branch_params = [selected_branch]
+        
+    with get_db() as conn:
+        query_all_tx = f'''
+            SELECT t.*, d.date 
+            FROM transactions t
+            JOIN days d ON t.day_id = d.id
+            {branch_filter_tx}
+            ORDER BY t.timestamp ASC
+        '''
+        all_tx_df = pd.read_sql_query(query_all_tx, conn, params=branch_params)
+        
+        if not all_tx_df.empty:
+            days_df = all_tx_df.groupby('date').agg(
+                first_customer_time=('timestamp', 'min'),
+                last_customer_time=('timestamp', 'max'),
+                total_customers=('id', 'count'),
+                total_prints=('prints_count', 'sum'),
+                total_revenue=('amount_paid', 'sum')
+            ).reset_index()
+        else:
+            days_df = pd.DataFrame()
+
+    if not days_df.empty:
+        # Date Filter
+        min_date = pd.to_datetime(days_df['date']).dt.date.min()
+        max_date = pd.to_datetime(days_df['date']).dt.date.max()
+        
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📅 فلاتر التاريخ")
+        date_range = st.sidebar.date_input(
+            "اختر الفترة الزمنية للتحليل:",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
+        )
+        
+        if len(date_range) == 2:
+            start_dt, end_dt = date_range
+            mask_days = (pd.to_datetime(days_df['date']).dt.date >= start_dt) & (pd.to_datetime(days_df['date']).dt.date <= end_dt)
+            mask_tx = (pd.to_datetime(all_tx_df['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_df['date']).dt.date <= end_dt)
+            
+            filtered_days = days_df.loc[mask_days].copy()
+            filtered_tx = all_tx_df.loc[mask_tx].copy()
+        else:
+            filtered_days = days_df.copy()
+            filtered_tx = all_tx_df.copy()
+
+        if selected_branch == "الكل":
+            stock_heaven = get_current_stock("Heaven")
+            stock_9a = get_current_stock("9A")
+            stock_display = f"Heaven: {stock_heaven} | 9A: {stock_9a}"
+        else:
+            stock_display = f"{get_current_stock(selected_branch)} ورقة"
+
+        # Top KPIs
+        kpi1, kpi2, kpi3 = st.columns(3)
+        total_rev_all = filtered_days['total_revenue'].sum() if not filtered_days.empty else 0
+        total_prints_all = filtered_days['total_prints'].sum() if not filtered_days.empty else 0
+        total_cust_all = filtered_days['total_customers'].sum() if not filtered_days.empty else 0
+        
+        kpi1.metric("💰 إجمالي الإيرادات (للفترة)", f"{total_rev_all:,.0f} ج.م")
+        kpi2.metric("👥 إجمالي الزبائن", f"{total_cust_all:,}")
+        kpi3.metric("🖨️ الورق المطبوع", f"{total_prints_all:,} ورقة")
+        
+        st.metric("📦 المخزون المتبقي حالياً", stock_display)
+        
+        st.markdown("---")
+        
+        if not filtered_days.empty:
+            ARABIC_DAYS = {
+                "Monday": "الإثنين", "Tuesday": "الثلاثاء", "Wednesday": "الأربعاء",
+                "Thursday": "الخميس", "Friday": "الجمعة", "Saturday": "السبت", "Sunday": "الأحد"
+            }
+            
+            filtered_tx['hour'] = pd.to_datetime(filtered_tx['timestamp']).dt.hour
+            peak_hours = filtered_tx.groupby(['date', 'hour'])['id'].count().reset_index()
+            peak_hours = peak_hours.sort_values(['date', 'id'], ascending=[True, False])
+            peak_hours = peak_hours.drop_duplicates(subset=['date'])
+            peak_hours = peak_hours.rename(columns={'hour': 'peak_hour'})[['date', 'peak_hour']]
+            
+            behavior_df = filtered_days.merge(peak_hours, on='date', how='left')
+            behavior_df['date_obj'] = pd.to_datetime(behavior_df['date'])
+            behavior_df['day_name'] = behavior_df['date_obj'].dt.day_name().map(ARABIC_DAYS)
+            
+            def extract_time(ts):
+                if pd.isna(ts): return "-"
+                return pd.to_datetime(ts).strftime('%I:%M %p')
+            
+            behavior_df['first_time'] = behavior_df['first_customer_time'].apply(extract_time)
+            behavior_df['last_time'] = behavior_df['last_customer_time'].apply(extract_time)
+            behavior_df['peak_str'] = behavior_df['peak_hour'].apply(lambda x: f"{int(x)}:00" if pd.notna(x) else "-")
+            
+            st.subheader(f"📋 سلوك الزبائن اليومي ({selected_branch})")
+            display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_revenue']]
+            display_df.columns = ['التاريخ', 'اليوم', 'أول زبون', 'آخر زبون', 'ساعة الذروة', 'عدد الزبائن', 'الإيراد (ج.م)']
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                st.subheader("📉 الإيرادات والزبائن خلال الفترة")
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=filtered_days['date'], y=filtered_days['total_revenue'],
+                    mode='lines+markers', name='الإيراد',
+                    line=dict(color='#00CC96', width=3)
+                ))
+                fig.add_trace(go.Bar(
+                    x=filtered_days['date'], y=filtered_days['total_customers'],
+                    name='عدد الزبائن', yaxis='y2',
+                    marker_color='rgba(99, 110, 250, 0.5)'
+                ))
+                fig.update_layout(
+                    yaxis=dict(title='الإيراد (ج.م)'),
+                    yaxis2=dict(title='الزبائن', overlaying='y', side='right', showgrid=False),
+                    hovermode="x unified",
+                    legend=dict(orientation="h", y=1.1)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+            with col_chart2:
+                st.subheader("📅 الإقبال حسب أيام الأسبوع")
+                weekday_stats = behavior_df.groupby('day_name').agg({'total_customers': 'sum'}).reset_index()
+                day_order = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"]
+                weekday_stats['day_name'] = pd.Categorical(weekday_stats['day_name'], categories=day_order, ordered=True)
+                weekday_stats = weekday_stats.sort_values('day_name')
+                
+                fig_week = px.bar(weekday_stats, x='day_name', y='total_customers', 
+                                  labels={'day_name': 'اليوم', 'total_customers': 'عدد الزبائن'},
+                                  color='total_customers', color_continuous_scale='Blues')
+                st.plotly_chart(fig_week, use_container_width=True)
+            
+            st.subheader("🔥 ساعات الذروة الإجمالية في هذه الفترة")
+            if not filtered_tx.empty:
+                hourly = filtered_tx.groupby('hour')['id'].count().reset_index().rename(columns={'id': 'الزيارات'})
+                hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x}:00")
+                fig_hour = px.bar(hourly, x='hour_str', y='الزيارات', color='الزيارات',
+                                  labels={'hour_str': 'الساعة'}, color_continuous_scale='Sunset')
+                st.plotly_chart(fig_hour, use_container_width=True)
+        else:
+            st.warning("لا توجد بيانات مسجلة في الفترة المحددة.")
+    else:
+        st.info("لا توجد بيانات كافية لعرض الرسوم البيانية بعد.")
