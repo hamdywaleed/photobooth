@@ -1,9 +1,21 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
+
+# ----------------- EGYPT TIMEZONE SETUP (UTC+3) -----------------
+EGYPT_TZ = timezone(timedelta(hours=3))
+
+def get_egypt_now():
+    return datetime.now(EGYPT_TZ)
+
+def get_egypt_now_str():
+    return get_egypt_now().strftime("%Y-%m-%d %H:%M:%S")
+
+def get_egypt_today_str():
+    return get_egypt_now().strftime("%Y-%m-%d")
 
 # ----------------- APP CONFIG -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
@@ -87,15 +99,15 @@ def add_stock(branch: str, quantity: int, notes: str = ""):
             INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
             VALUES (:ts, 'restock', :qty, :notes, :branch)
         '''), {
-            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ts": get_egypt_now_str(),
             "qty": quantity,
             "notes": notes,
             "branch": branch
         })
 
 def record_transaction(branch: str, prints_count: int, amount_paid: float):
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    today_str = str(date.today())
+    now_str = get_egypt_now_str()
+    today_str = get_egypt_today_str()
     
     with engine.begin() as conn:
         row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": today_str}).fetchone()
@@ -188,6 +200,7 @@ branch = st.session_state.branch
 if role == "employee":
     current_stock = get_current_stock(branch)
     st.sidebar.metric(f"📦 رصيد الورق", f"{current_stock} ورقة")
+    st.sidebar.caption(f"🕒 توقيت مصر: {get_egypt_now().strftime('%I:%M %p')}")
     
     st.markdown("""
         <style>
@@ -218,7 +231,7 @@ if role == "employee":
     """, unsafe_allow_html=True)
 
     st.title(f"📸 فرع {branch} - المبيعات السريعة")
-    st.caption("أزرار كبيرة لتسجيل المبيعات بضغطة واحدة وبأسرع وقت.")
+    st.caption("أزرار كبيرة لتسجيل المبيعات بضغطة واحدة وبأسرع وقت بتوقيت القاهرة.")
     
     st.subheader("⚡ باقات التصوير الأساسية")
     btn_col1, btn_col2, btn_col3 = st.columns(3)
@@ -285,7 +298,7 @@ if role == "employee":
     st.markdown("---")
     st.subheader("📋 آخر 5 عمليات مسجلة اليوم")
     with engine.connect() as conn:
-        today_str = str(date.today())
+        today_str = get_egypt_today_str()
         today_tx = pd.read_sql_query(
             text('''
             SELECT t.timestamp as "الوقت", t.prints_count as "عدد الورق", t.amount_paid as "المبلغ (ج.م)"
@@ -474,13 +487,14 @@ elif role == "admin":
         
     if not all_backup_tx.empty:
         col_b1, col_b2, col_b3 = st.columns(3)
+        today_date_str = get_egypt_today_str()
         
         # utf-8-sig is crucial for Arabic support in Excel
         csv_all = all_backup_tx.to_csv(index=False).encode('utf-8-sig')
         col_b1.download_button(
             label="📥 تحميل المبيعات مجمعة (الكل)",
             data=csv_all,
-            file_name=f"all_branches_backup_{date.today()}.csv",
+            file_name=f"all_branches_backup_{today_date_str}.csv",
             mime="text/csv",
             use_container_width=True
         )
@@ -491,7 +505,7 @@ elif role == "admin":
             col_b2.download_button(
                 label="📥 مبيعات فرع Heaven",
                 data=csv_heaven,
-                file_name=f"heaven_backup_{date.today()}.csv",
+                file_name=f"heaven_backup_{today_date_str}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
@@ -502,7 +516,8 @@ elif role == "admin":
             col_b3.download_button(
                 label="📥 مبيعات فرع 9A",
                 data=csv_9a,
-                file_name=f"9a_backup_{date.today()}.csv",
+                file_name=f"9a_backup_{today_date_str}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
+
