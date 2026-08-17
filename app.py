@@ -93,6 +93,19 @@ def get_current_stock(branch: str):
         ).fetchone()
         return result[0] if result else 0
 
+def get_waste_count(branch: str = None):
+    with engine.connect() as conn:
+        if branch and branch != "الكل":
+            result = conn.execute(
+                text("SELECT ABS(COALESCE(SUM(quantity), 0)) as total FROM inventory WHERE action_type = 'waste' AND branch = :branch"),
+                {"branch": branch}
+            ).fetchone()
+        else:
+            result = conn.execute(
+                text("SELECT ABS(COALESCE(SUM(quantity), 0)) as total FROM inventory WHERE action_type = 'waste'")
+            ).fetchone()
+        return result[0] if result else 0
+
 def add_stock(branch: str, quantity: int, notes: str = ""):
     with engine.begin() as conn:
         conn.execute(text('''
@@ -101,6 +114,18 @@ def add_stock(branch: str, quantity: int, notes: str = ""):
         '''), {
             "ts": get_egypt_now_str(),
             "qty": quantity,
+            "notes": notes,
+            "branch": branch
+        })
+
+def record_waste(branch: str, quantity: int = 1, notes: str = "ورقة تالفة"):
+    with engine.begin() as conn:
+        conn.execute(text('''
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'waste', :qty, :notes, :branch)
+        '''), {
+            "ts": get_egypt_now_str(),
+            "qty": -quantity,
             "notes": notes,
             "branch": branch
         })
@@ -200,13 +225,13 @@ branch = st.session_state.branch
 if role == "employee":
     current_stock = get_current_stock(branch)
     st.sidebar.metric(f"📦 رصيد الورق", f"{current_stock} ورقة")
-    st.sidebar.caption(f"🕒 توقيت مصر: {get_egypt_now().strftime('%I:%M %p')}")
+    st.sidebar.caption(f"🕒 توقيت النظام (مصر): {get_egypt_now().strftime('%I:%M %p')}")
     
     st.markdown("""
         <style>
         div[data-testid="stButton"] > button {
             height: 120px !important;
-            font-size: 22px !important;
+            font-size: 20px !important;
             font-weight: 800 !important;
             border-radius: 12px;
             border: 2px solid #e0e0e0;
@@ -231,36 +256,45 @@ if role == "employee":
     """, unsafe_allow_html=True)
 
     st.title(f"📸 فرع {branch} - المبيعات السريعة")
-    st.caption("أزرار كبيرة لتسجيل المبيعات بضغطة واحدة وبأسرع وقت بتوقيت القاهرة.")
+    st.caption("أزرار سريعة لتسجيل المبيعات وتسجيل التوالف بضغطة واحدة.")
     
-    st.subheader("⚡ باقات التصوير الأساسية")
-    btn_col1, btn_col2, btn_col3 = st.columns(3)
+    st.subheader("⚡ العمليات السريعة")
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
     
     with btn_col1:
-        if st.button("🖼️ صورة فردي\n(50 ج.م - 1 ورقة)", use_container_width=True):
+        if st.button("🖼️ صورة فردي\n(50 ج - 1 ورقة)", use_container_width=True):
             if current_stock < 1:
                 st.error("⚠️ رصيد الورق غير كافٍ!")
             else:
                 record_transaction(branch, 1, 50.0)
-                st.success("✅ تم التسجيل!")
+                st.success("✅ تم تسجيل البيع!")
                 st.rerun()
                 
     with btn_col2:
-        if st.button("🎞️ كارت ثلاثي\n(90 ج.م - 2 ورقة)", use_container_width=True):
+        if st.button("🎞️ كارت ثلاثي\n(90 ج - 2 ورقة)", use_container_width=True):
             if current_stock < 2:
                 st.error("⚠️ رصيد الورق غير كافٍ!")
             else:
                 record_transaction(branch, 2, 90.0)
-                st.success("✅ تم التسجيل!")
+                st.success("✅ تم تسجيل البيع!")
                 st.rerun()
                 
     with btn_col3:
-        if st.button("📸 كارت رباعي\n(120 ج.م - 3 ورقات)", use_container_width=True):
+        if st.button("📸 كارت رباعي\n(120 ج - 3 ورقات)", use_container_width=True):
             if current_stock < 3:
                 st.error("⚠️ رصيد الورق غير كافٍ!")
             else:
                 record_transaction(branch, 3, 120.0)
-                st.success("✅ تم التسجيل!")
+                st.success("✅ تم تسجيل البيع!")
+                st.rerun()
+
+    with btn_col4:
+        if st.button("🗑️ ورقة تالفة\n(خصم 1 ورقة)", use_container_width=True):
+            if current_stock < 1:
+                st.error("⚠️ رصيد الورق فارغ بالفعل!")
+            else:
+                record_waste(branch, 1, "تالف طباعة سريع")
+                st.warning("⚠️ تم خصم ورقة تالفة من المخزون!")
                 st.rerun()
 
     st.markdown("<br><hr><br>", unsafe_allow_html=True)
@@ -377,19 +411,24 @@ elif role == "admin":
         if selected_branch == "الكل":
             stock_heaven = get_current_stock("Heaven")
             stock_9a = get_current_stock("9A")
+            waste_heaven = get_waste_count("Heaven")
+            waste_9a = get_waste_count("9A")
             stock_display = f"Heaven: {stock_heaven} | 9A: {stock_9a}"
+            waste_display = f"Heaven: {waste_heaven} | 9A: {waste_9a}"
         else:
             stock_display = f"{get_current_stock(selected_branch)} ورقة"
+            waste_display = f"{get_waste_count(selected_branch)} ورقة"
 
-        # Top KPIs
-        kpi1, kpi2, kpi3 = st.columns(3)
+        # Top KPIs (4 columns now with Waste)
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         total_rev_all = filtered_days['total_revenue'].sum() if not filtered_days.empty else 0
         total_prints_all = filtered_days['total_prints'].sum() if not filtered_days.empty else 0
         total_cust_all = filtered_days['total_customers'].sum() if not filtered_days.empty else 0
         
-        kpi1.metric("💰 إجمالي الإيرادات (للفترة)", f"{total_rev_all:,.0f} ج.م")
+        kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
         kpi2.metric("👥 إجمالي الزبائن", f"{total_cust_all:,}")
         kpi3.metric("🖨️ الورق المطبوع", f"{total_prints_all:,} ورقة")
+        kpi4.metric("🗑️ إجمالي التالف", waste_display)
         
         st.metric("📦 المخزون المتبقي حالياً", stock_display)
         
