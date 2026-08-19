@@ -543,54 +543,10 @@ if role == "employee":
 
 # ================= 2. ADMIN DASHBOARD =================
 elif role == "admin":
+    # فحص وإضافة رصيد الشهر الحالي تلقائياً
     check_and_add_monthly_allowance()
 
     st.title("📊 لوحة تحكم الإدارة (Admin Analytics)")
-    
-    st.subheader("🏖️ رصيد وإجازات الموظفين")
-    leave_heaven = get_leave_balance("Heaven")
-    leave_9a = get_leave_balance("9A")
-    
-    col_l1, col_l2 = st.columns(2)
-    with col_l1:
-        st.markdown(f"#### 🌴 فرع Heaven: **{leave_heaven} أيام متبقية**")
-        with st.expander("تسجيل إجازة لموظف Heaven (-1 يوم)", expanded=False):
-            with st.form("leave_heaven_form"):
-                note_h = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
-                if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (Heaven)", use_container_width=True):
-                    record_leave("Heaven", note_h)
-                    st.success("تم خصم يوم إجازة بنجاح!")
-                    st.rerun()
-
-    with col_l2:
-        st.markdown(f"#### 🌴 فرع 9A: **{leave_9a} أيام متبقية**")
-        with st.expander("تسجيل إجازة لموظف 9A (-1 يوم)", expanded=False):
-            with st.form("leave_9a_form"):
-                note_9a = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
-                if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (9A)", use_container_width=True):
-                    record_leave("9A", note_9a)
-                    st.success("تم خصم يوم إجازة بنجاح!")
-                    st.rerun()
-
-    with st.expander("📋 عرض سجل حركات الإجازات بالكامل", expanded=False):
-        with engine.connect() as conn:
-            leaves_df = pd.read_sql_query(
-                text("SELECT timestamp, branch, action_type, days_count, notes FROM employee_leaves ORDER BY timestamp DESC LIMIT 50"),
-                conn
-            )
-            if not leaves_df.empty:
-                display_leaves = leaves_df.rename(columns={
-                    'timestamp': 'الوقت',
-                    'branch': 'الفرع',
-                    'action_type': 'نوع الحركة',
-                    'days_count': 'الأيام',
-                    'notes': 'الملاحظات'
-                })
-                st.dataframe(display_leaves, use_container_width=True, hide_index=True)
-            else:
-                st.info("لا توجد حركات إجازات مسجلة بعد.")
-
-    st.markdown("---")
     
     st.sidebar.subheader("🏢 فلتر الفرع")
     selected_branch = st.sidebar.selectbox("اختر الفرع للتحليل:", ["الكل", "Heaven", "9A"])
@@ -779,6 +735,51 @@ elif role == "admin":
         except Exception:
             st.info("سجل المراقبة نظيف، لا توجد أي عمليات حذف أو تعديل حتى الآن.")
 
+    # --- SECTION: LEAVES MANAGEMENT (MOVED TO BOTTOM) ---
+    st.markdown("---")
+    st.subheader("🏖️ رصيد وإجازات الموظفين")
+    leave_heaven = get_leave_balance("Heaven")
+    leave_9a = get_leave_balance("9A")
+    
+    col_l1, col_l2 = st.columns(2)
+    with col_l1:
+        st.markdown(f"#### 🌴 فرع Heaven: **{leave_heaven} أيام متبقية**")
+        with st.expander("تسجيل إجازة لموظف Heaven (-1 يوم)", expanded=False):
+            with st.form("leave_heaven_form"):
+                note_h = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
+                if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (Heaven)", use_container_width=True):
+                    record_leave("Heaven", note_h)
+                    st.success("تم خصم يوم إجازة بنجاح!")
+                    st.rerun()
+
+    with col_l2:
+        st.markdown(f"#### 🌴 فرع 9A: **{leave_9a} أيام متبقية**")
+        with st.expander("تسجيل إجازة لموظف 9A (-1 يوم)", expanded=False):
+            with st.form("leave_9a_form"):
+                note_9a = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
+                if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (9A)", use_container_width=True):
+                    record_leave("9A", note_9a)
+                    st.success("تم خصم يوم إجازة بنجاح!")
+                    st.rerun()
+
+    with st.expander("📋 عرض سجل حركات الإجازات بالكامل", expanded=False):
+        with engine.connect() as conn:
+            leaves_df = pd.read_sql_query(
+                text("SELECT timestamp, branch, action_type, days_count, notes FROM employee_leaves ORDER BY timestamp DESC LIMIT 50"),
+                conn
+            )
+            if not leaves_df.empty:
+                display_leaves = leaves_df.rename(columns={
+                    'timestamp': 'الوقت',
+                    'branch': 'الفرع',
+                    'action_type': 'نوع الحركة',
+                    'days_count': 'الأيام',
+                    'notes': 'الملاحظات'
+                })
+                st.dataframe(display_leaves, use_container_width=True, hide_index=True)
+            else:
+                st.info("لا توجد حركات إجازات مسجلة بعد.")
+
     # --- BACKUP SECTION ---
     st.markdown("---")
     st.subheader("📥 النسخ الاحتياطي للبيانات (Backup)")
@@ -833,4 +834,3 @@ elif role == "admin":
                 mime="text/csv",
                 use_container_width=True
             )
-
