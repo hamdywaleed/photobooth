@@ -32,7 +32,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- DB SETUP -----------------
-# Streamlit secrets lookup for Cloud deployment, fallback to SQLite locally
 try:
     if "DATABASE_URL" in st.secrets:
         DB_URL = st.secrets["DATABASE_URL"]
@@ -52,10 +51,12 @@ def init_db():
             days_id_def = "id SERIAL PRIMARY KEY"
             tx_id_def = "id SERIAL PRIMARY KEY"
             inv_id_def = "id SERIAL PRIMARY KEY"
+            audit_id_def = "id SERIAL PRIMARY KEY"
         else:
             days_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             tx_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             inv_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+            audit_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             
         conn.execute(text(f'''
             CREATE TABLE IF NOT EXISTS days (
@@ -82,6 +83,16 @@ def init_db():
                 quantity INTEGER NOT NULL,
                 notes TEXT,
                 branch TEXT NOT NULL
+            )
+        '''))
+        conn.execute(text(f'''
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                {audit_id_def},
+                timestamp TEXT NOT NULL,
+                branch TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                transaction_id INTEGER,
+                details TEXT NOT NULL
             )
         '''))
 
@@ -169,6 +180,73 @@ def record_transaction(branch: str, prints_count: int, amount_paid: float):
             "qty": -prints_count,
             "branch": branch
         })
+
+def delete_transaction(tx_id: int, branch: str):
+    now_str = get_egypt_now_str()
+    with engine.begin() as conn:
+        tx = conn.execute(text("SELECT * FROM transactions WHERE id = :id AND branch = :branch"), {"id": tx_id, "branch": branch}).mappings().fetchone()
+        if tx:
+            # 1. إرجاع الورق للمخزون
+            conn.execute(text('''
+                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                VALUES (:ts, 'restock', :qty, :notes, :branch)
+            '''), {
+                "ts": now_str,
+                "qty": tx["prints_count"],
+                "notes": f"استرجاع ورق لحذف المعاملة #{tx_id}",
+                "branch": branch
+            })
+            # 2. تسجيل الحدث في الـ Audit Log
+            conn.execute(text('''
+                INSERT INTO audit_logs (timestamp, branch, action_type, transaction_id, details)
+                VALUES (:ts, :branch, 'حذف', :tx_id, :details)
+            '''), {
+                "ts": now_str,
+                "branch": branch,
+                "tx_id": tx_id,
+                "details": f"تم حذف العملية (الوقت: {tx['timestamp']} | الورق: {tx['prints_count']} | المبلغ: {tx['amount_paid']} ج.م)"
+            })
+            # 3. مسح المعاملة
+            conn.execute(text("DELETE FROM transactions WHERE id = :id"), {"id": tx_id})
+            return True
+    return False
+
+def update_transaction(tx_id: int, branch: str, new_prints: int, new_amount: float):
+    now_str = get_egypt_now_str()
+    with engine.begin() as conn:
+        tx = conn.execute(text("SELECT * FROM transactions WHERE id = :id AND branch = :branch"), {"id": tx_id, "branch": branch}).mappings().fetchone()
+        if tx:
+            diff_prints = new_prints - tx["prints_count"]
+            if diff_prints != 0:
+                conn.execute(text('''
+                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                    VALUES (:ts, 'consumption', :qty, :notes, :branch)
+                '''), {
+                    "ts": now_str,
+                    "qty": -diff_prints,
+                    "notes": f"تسوية فرق ورق لتعديل المعاملة #{tx_id}",
+                    "branch": branch
+                })
+            conn.execute(text('''
+                INSERT INTO audit_logs (timestamp, branch, action_type, transaction_id, details)
+                VALUES (:ts, :branch, 'تعديل', :tx_id, :details)
+            '''), {
+                "ts": now_str,
+                "branch": branch,
+                "tx_id": tx_id,
+                "details": f"تعديل من ({tx['prints_count']} ورق - {tx['amount_paid']} ج) إلى ({new_prints} ورق - {new_amount} ج)"
+            })
+            conn.execute(text('''
+                UPDATE transactions 
+                SET prints_count = :prints, amount_paid = :amount 
+                WHERE id = :id
+            '''), {
+                "prints": new_prints,
+                "amount": new_amount,
+                "id": tx_id
+            })
+            return True
+    return False
 
 # ----------------- AUTHENTICATION -----------------
 if 'logged_in' not in st.session_state:
@@ -334,22 +412,51 @@ if role == "employee":
                     st.rerun()
 
     st.markdown("---")
-    st.subheader("📋 آخر 5 عمليات مسجلة في يوم العمل الحالي")
+    st.subheader("📋 عمليات يوم العمل الحالي (اليوم بالكامل)")
+    
     with engine.connect() as conn:
         today_str = get_egypt_today_str()
         today_tx = pd.read_sql_query(
             text('''
-            SELECT t.timestamp as "الوقت", t.prints_count as "عدد الورق", t.amount_paid as "المبلغ (ج.م)"
+            SELECT t.id, t.timestamp as "الوقت", t.prints_count as "عدد الورق", t.amount_paid as "المبلغ (ج.م)"
             FROM transactions t
             JOIN days d ON t.day_id = d.id
             WHERE d.date = :date AND t.branch = :branch
-            ORDER BY t.timestamp DESC LIMIT 5
+            ORDER BY t.timestamp DESC
             '''), 
             conn, 
             params={"date": today_str, "branch": branch}
         )
+        
         if not today_tx.empty:
-            st.dataframe(today_tx, use_container_width=True, hide_index=True)
+            st.dataframe(today_tx.drop(columns=['id']), use_container_width=True, hide_index=True)
+            
+            st.markdown("##### 🛠️ إدارة / تعديل / حذف عملية من اليوم")
+            options = {f"عملية #{row['id']} - الساعة {row['الوقت'].split(' ')[1]} ({row['عدد الورق']} ورق | {row['المبلغ (ج.م)']} ج)": row['id'] for _, row in today_tx.iterrows()}
+            selected_label = st.selectbox("اختر العملية للتحكم بها:", list(options.keys()))
+            selected_id = options[selected_label]
+            selected_row = today_tx[today_tx['id'] == selected_id].iloc[0]
+            
+            col_act1, col_act2 = st.columns(2)
+            
+            with col_act1:
+                with st.expander("✏️ تعديل العملية المحددة", expanded=False):
+                    with st.form("edit_form"):
+                        new_p = st.number_input("تعديل عدد الورق:", min_value=1, max_value=50, value=int(selected_row['عدد الورق']), step=1)
+                        new_a = st.number_input("تعديل المبلغ (ج.م):", min_value=0.0, value=float(selected_row['المبلغ (ج.م)']), step=10.0)
+                        edit_btn = st.form_submit_button("حفظ التعديلات", use_container_width=True)
+                        if edit_btn:
+                            if update_transaction(selected_id, branch, new_p, new_a):
+                                st.success("تم تعديل العملية وضبط المخزون وسجل المراقبة بنجاح!")
+                                st.rerun()
+
+            with col_act2:
+                with st.expander("🗑️ حذف العملية المحددة", expanded=False):
+                    st.warning(f"هل أنت متأكد من حذف العملية #{selected_id}؟ سيتم استرجاع الورق للمخزون وتسجيل الحذف.")
+                    if st.button("تأكيد الحذف نهائياً", type="primary", use_container_width=True):
+                        if delete_transaction(selected_id, branch):
+                            st.success("تم مسح العملية واسترجاع الورق بنجاح!")
+                            st.rerun()
         else:
             st.info("لا توجد عمليات مسجلة في يوم العمل الحالي حتى الآن.")
 
@@ -388,7 +495,6 @@ elif role == "admin":
             days_df = pd.DataFrame()
 
     if not days_df.empty:
-        # Date Filter
         min_date = pd.to_datetime(days_df['date']).dt.date.min()
         max_date = pd.to_datetime(days_df['date']).dt.date.max()
         
@@ -423,7 +529,7 @@ elif role == "admin":
             stock_display = f"{get_current_stock(selected_branch)} ورقة"
             waste_display = f"{get_waste_count(selected_branch)} ورقة"
 
-        # Top KPIs (4 columns now with Waste)
+        # Top KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         total_rev_all = filtered_days['total_revenue'].sum() if not filtered_days.empty else 0
         total_prints_all = filtered_days['total_prints'].sum() if not filtered_days.empty else 0
@@ -513,6 +619,28 @@ elif role == "admin":
             st.warning("لا توجد بيانات مسجلة في الفترة المحددة.")
     else:
         st.info("لا توجد بيانات كافية لعرض الرسوم البيانية بعد.")
+
+    # --- AUDIT LOGS SECTION FOR ADMIN ---
+    st.markdown("---")
+    st.subheader("🕵️ سجل المراقبة والتعديلات (Audit Logs)")
+    st.caption("سجل مفصل يوضح كل عملية تم حذفها أو تعديلها من قبل الموظفين وتوقيتها الدقيق.")
+    
+    with engine.connect() as conn:
+        audit_filter = ""
+        audit_params = {}
+        if selected_branch != "الكل":
+            audit_filter = "WHERE branch = :branch"
+            audit_params = {"branch": selected_branch}
+            
+        audit_df = pd.read_sql_query(
+            text(f"SELECT timestamp as 'الوقت', branch as 'الفرع', action_type as 'نوع الإجراء', details as 'تفاصيل الإجراء' FROM audit_logs {audit_filter} ORDER BY timestamp DESC LIMIT 50"),
+            conn,
+            params=audit_params
+        )
+        if not audit_df.empty:
+            st.dataframe(audit_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("سجل المراقبة نظيف، لا توجد أي عمليات حذف أو تعديل حتى الآن.")
 
     # --- BACKUP SECTION ---
     st.markdown("---")
