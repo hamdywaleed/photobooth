@@ -52,11 +52,13 @@ def init_db():
             tx_id_def = "id SERIAL PRIMARY KEY"
             inv_id_def = "id SERIAL PRIMARY KEY"
             audit_id_def = "id SERIAL PRIMARY KEY"
+            leaves_id_def = "id SERIAL PRIMARY KEY"
         else:
             days_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             tx_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             inv_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             audit_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+            leaves_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             
         conn.execute(text(f'''
             CREATE TABLE IF NOT EXISTS days (
@@ -95,8 +97,56 @@ def init_db():
                 details TEXT NOT NULL
             )
         '''))
+        conn.execute(text(f'''
+            CREATE TABLE IF NOT EXISTS employee_leaves (
+                {leaves_id_def},
+                timestamp TEXT NOT NULL,
+                branch TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                days_count INTEGER NOT NULL,
+                notes TEXT
+            )
+        '''))
 
 init_db()
+
+# ----------------- LEAVES HELPER FUNCTIONS -----------------
+def check_and_add_monthly_allowance():
+    current_month_str = get_egypt_now().strftime("%Y-%m")
+    with engine.begin() as conn:
+        for b in ["Heaven", "9A"]:
+            row = conn.execute(
+                text("SELECT id FROM employee_leaves WHERE branch = :branch AND action_type = 'monthly_allowance' AND notes LIKE :month_pattern"),
+                {"branch": b, "month_pattern": f"%{current_month_str}%"}
+            ).fetchone()
+            if not row:
+                conn.execute(text('''
+                    INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
+                    VALUES (:ts, :branch, 'monthly_allowance', 4, :notes)
+                '''), {
+                    "ts": get_egypt_now_str(),
+                    "branch": b,
+                    "notes": f"رصيد إجازات شهر {current_month_str}"
+                })
+
+def get_leave_balance(branch: str):
+    with engine.connect() as conn:
+        res = conn.execute(
+            text("SELECT COALESCE(SUM(days_count), 0) FROM employee_leaves WHERE branch = :branch"),
+            {"branch": branch}
+        ).fetchone()
+        return res[0] if res else 0
+
+def record_leave(branch: str, notes: str = "إجازة اعتيادية"):
+    with engine.begin() as conn:
+        conn.execute(text('''
+            INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
+            VALUES (:ts, :branch, 'leave_taken', -1, :notes)
+        '''), {
+            "ts": get_egypt_now_str(),
+            "branch": branch,
+            "notes": notes
+        })
 
 # ----------------- DB HELPER FUNCTIONS -----------------
 def get_current_stock(branch: str):
@@ -493,7 +543,54 @@ if role == "employee":
 
 # ================= 2. ADMIN DASHBOARD =================
 elif role == "admin":
+    check_and_add_monthly_allowance()
+
     st.title("📊 لوحة تحكم الإدارة (Admin Analytics)")
+    
+    st.subheader("🏖️ رصيد وإجازات الموظفين")
+    leave_heaven = get_leave_balance("Heaven")
+    leave_9a = get_leave_balance("9A")
+    
+    col_l1, col_l2 = st.columns(2)
+    with col_l1:
+        st.markdown(f"#### 🌴 فرع Heaven: **{leave_heaven} أيام متبقية**")
+        with st.expander("تسجيل إجازة لموظف Heaven (-1 يوم)", expanded=False):
+            with st.form("leave_heaven_form"):
+                note_h = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
+                if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (Heaven)", use_container_width=True):
+                    record_leave("Heaven", note_h)
+                    st.success("تم خصم يوم إجازة بنجاح!")
+                    st.rerun()
+
+    with col_l2:
+        st.markdown(f"#### 🌴 فرع 9A: **{leave_9a} أيام متبقية**")
+        with st.expander("تسجيل إجازة لموظف 9A (-1 يوم)", expanded=False):
+            with st.form("leave_9a_form"):
+                note_9a = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
+                if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (9A)", use_container_width=True):
+                    record_leave("9A", note_9a)
+                    st.success("تم خصم يوم إجازة بنجاح!")
+                    st.rerun()
+
+    with st.expander("📋 عرض سجل حركات الإجازات بالكامل", expanded=False):
+        with engine.connect() as conn:
+            leaves_df = pd.read_sql_query(
+                text("SELECT timestamp, branch, action_type, days_count, notes FROM employee_leaves ORDER BY timestamp DESC LIMIT 50"),
+                conn
+            )
+            if not leaves_df.empty:
+                display_leaves = leaves_df.rename(columns={
+                    'timestamp': 'الوقت',
+                    'branch': 'الفرع',
+                    'action_type': 'نوع الحركة',
+                    'days_count': 'الأيام',
+                    'notes': 'الملاحظات'
+                })
+                st.dataframe(display_leaves, use_container_width=True, hide_index=True)
+            else:
+                st.info("لا توجد حركات إجازات مسجلة بعد.")
+
+    st.markdown("---")
     
     st.sidebar.subheader("🏢 فلتر الفرع")
     selected_branch = st.sidebar.selectbox("اختر الفرع للتحليل:", ["الكل", "Heaven", "9A"])
@@ -736,3 +833,4 @@ elif role == "admin":
                 mime="text/csv",
                 use_container_width=True
             )
+
