@@ -15,7 +15,10 @@ def get_egypt_now_str():
     return get_egypt_now().strftime("%Y-%m-%d %H:%M:%S")
 
 def get_egypt_today_str():
-    return get_egypt_now().strftime("%Y-%m-%d")
+    # احتساب يوم العمل التشغيلي: يطرح 4 ساعات لضم ساعات الفجر (حتى 3:59 ص) لليوم السابق
+    egypt_now = get_egypt_now()
+    business_now = egypt_now - timedelta(hours=4)
+    return business_now.strftime("%Y-%m-%d")
 
 # ----------------- APP CONFIG -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
@@ -225,7 +228,8 @@ branch = st.session_state.branch
 if role == "employee":
     current_stock = get_current_stock(branch)
     st.sidebar.metric(f"📦 رصيد الورق", f"{current_stock} ورقة")
-    st.sidebar.caption(f"🕒 توقيت النظام (مصر): {get_egypt_now().strftime('%I:%M %p')}")
+    st.sidebar.caption(f"🕒 توقيت النظام: {get_egypt_now().strftime('%I:%M %p')}")
+    st.sidebar.caption(f"📅 يوم العمل: {get_egypt_today_str()}")
     
     st.markdown("""
         <style>
@@ -256,7 +260,7 @@ if role == "employee":
     """, unsafe_allow_html=True)
 
     st.title(f"📸 فرع {branch} - المبيعات السريعة")
-    st.caption("أزرار سريعة لتسجيل المبيعات وتسجيل التوالف بضغطة واحدة.")
+    st.caption("أزرار سريعة لتسجيل المبيعات وتتبع يوم العمل حتى 3:00 فجراً.")
     
     st.subheader("⚡ العمليات السريعة")
     btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
@@ -330,7 +334,7 @@ if role == "employee":
                     st.rerun()
 
     st.markdown("---")
-    st.subheader("📋 آخر 5 عمليات مسجلة اليوم")
+    st.subheader("📋 آخر 5 عمليات مسجلة في يوم العمل الحالي")
     with engine.connect() as conn:
         today_str = get_egypt_today_str()
         today_tx = pd.read_sql_query(
@@ -347,7 +351,7 @@ if role == "employee":
         if not today_tx.empty:
             st.dataframe(today_tx, use_container_width=True, hide_index=True)
         else:
-            st.info("لا توجد عمليات مسجلة اليوم في هذا الفرع حتى الآن.")
+            st.info("لا توجد عمليات مسجلة في يوم العمل الحالي حتى الآن.")
 
 # ================= 2. ADMIN DASHBOARD =================
 elif role == "admin":
@@ -460,7 +464,7 @@ elif role == "admin":
             
             st.subheader(f"📋 سلوك الزبائن اليومي ({selected_branch})")
             display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_revenue']]
-            display_df.columns = ['التاريخ', 'اليوم', 'أول زبون', 'آخر زبون', 'ساعة الذروة', 'عدد الزبائن', 'الإيراد (ج.م)']
+            display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول زبون', 'آخر زبون', 'ساعة الذروة', 'عدد الزبائن', 'الإيراد (ج.م)']
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
             col_chart1, col_chart2 = st.columns(2)
@@ -517,7 +521,7 @@ elif role == "admin":
     
     with engine.connect() as conn:
         all_backup_tx = pd.read_sql_query(text('''
-            SELECT t.timestamp as "الوقت", d.date as "التاريخ", t.prints_count as "عدد الورق", 
+            SELECT t.timestamp as "الوقت", d.date as "تاريخ يوم العمل", t.prints_count as "عدد الورق", 
                    t.amount_paid as "المبلغ (ج.م)", t.branch as "الفرع"
             FROM transactions t
             JOIN days d ON t.day_id = d.id
@@ -528,7 +532,6 @@ elif role == "admin":
         col_b1, col_b2, col_b3 = st.columns(3)
         today_date_str = get_egypt_today_str()
         
-        # utf-8-sig is crucial for Arabic support in Excel
         csv_all = all_backup_tx.to_csv(index=False).encode('utf-8-sig')
         col_b1.download_button(
             label="📥 تحميل المبيعات مجمعة (الكل)",
@@ -559,4 +562,3 @@ elif role == "admin":
                 mime="text/csv",
                 use_container_width=True
             )
-
