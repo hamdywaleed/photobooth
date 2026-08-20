@@ -543,7 +543,6 @@ if role == "employee":
 
 # ================= 2. ADMIN DASHBOARD =================
 elif role == "admin":
-    # فحص وإضافة رصيد الشهر الحالي تلقائياً
     check_and_add_monthly_allowance()
 
     st.title("📊 لوحة تحكم الإدارة (Admin Analytics)")
@@ -626,6 +625,42 @@ elif role == "admin":
         
         st.metric("📦 المخزون المتبقي حالياً", stock_display)
         
+        st.markdown("---")
+
+        # ----------------- TODAY'S LIVE TRANSACTIONS FOR ADMIN -----------------
+        today_b_str = get_egypt_today_str()
+        st.subheader(f"⚡ عمليات يوم العمل الحالي ({selected_branch}) - {today_b_str}")
+        
+        with engine.connect() as conn:
+            admin_today_branch_filter = ""
+            admin_today_params = {"date": today_b_str}
+            if selected_branch != "الكل":
+                admin_today_branch_filter = "AND t.branch = :branch"
+                admin_today_params["branch"] = selected_branch
+
+            today_admin_tx = pd.read_sql_query(
+                text(f'''
+                SELECT t.timestamp, t.branch, t.prints_count, t.amount_paid
+                FROM transactions t
+                JOIN days d ON t.day_id = d.id
+                WHERE d.date = :date {admin_today_branch_filter}
+                ORDER BY t.timestamp DESC
+                '''),
+                conn,
+                params=admin_today_params
+            )
+
+        if not today_admin_tx.empty:
+            display_admin_today = today_admin_tx.rename(columns={
+                'timestamp': 'الوقت',
+                'branch': 'الفرع',
+                'prints_count': 'عدد الورق',
+                'amount_paid': 'المبلغ (ج.م)'
+            })
+            st.dataframe(display_admin_today, use_container_width=True, hide_index=True)
+        else:
+            st.info("لا توجد عمليات مسجلة في هذا اليوم حتى الآن.")
+
         st.markdown("---")
         
         if not filtered_days.empty:
@@ -735,7 +770,7 @@ elif role == "admin":
         except Exception:
             st.info("سجل المراقبة نظيف، لا توجد أي عمليات حذف أو تعديل حتى الآن.")
 
-    # --- SECTION: LEAVES MANAGEMENT (MOVED TO BOTTOM) ---
+    # --- SECTION: LEAVES MANAGEMENT (AT BOTTOM) ---
     st.markdown("---")
     st.subheader("🏖️ رصيد وإجازات الموظفين")
     leave_heaven = get_leave_balance("Heaven")
@@ -834,3 +869,4 @@ elif role == "admin":
                 mime="text/csv",
                 use_container_width=True
             )
+
