@@ -53,12 +53,14 @@ def init_db():
             inv_id_def = "id SERIAL PRIMARY KEY"
             audit_id_def = "id SERIAL PRIMARY KEY"
             leaves_id_def = "id SERIAL PRIMARY KEY"
+            exp_id_def = "id SERIAL PRIMARY KEY"
         else:
             days_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             tx_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             inv_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             audit_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             leaves_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+            exp_id_def = "id INTEGER PRIMARY KEY AUTOINCREMENT"
             
         conn.execute(text(f'''
             CREATE TABLE IF NOT EXISTS days (
@@ -105,6 +107,17 @@ def init_db():
                 action_type TEXT NOT NULL,
                 days_count INTEGER NOT NULL,
                 notes TEXT
+            )
+        '''))
+        conn.execute(text(f'''
+            CREATE TABLE IF NOT EXISTS expenses (
+                {exp_id_def},
+                timestamp TEXT NOT NULL,
+                date TEXT NOT NULL,
+                branch TEXT NOT NULL,
+                amount REAL NOT NULL,
+                description TEXT NOT NULL,
+                created_by TEXT NOT NULL
             )
         '''))
 
@@ -247,7 +260,7 @@ def delete_transaction(tx_id: int, branch: str):
             })
             conn.execute(text('''
                 INSERT INTO audit_logs (timestamp, branch, action_type, transaction_id, details)
-                VALUES (:ts, :branch, 'حذف', :tx_id, :details)
+                VALUES (:ts, :branch, 'حذف مبيعات', :tx_id, :details)
             '''), {
                 "ts": now_str,
                 "branch": branch,
@@ -276,7 +289,7 @@ def update_transaction(tx_id: int, branch: str, new_prints: int, new_amount: flo
                 })
             conn.execute(text('''
                 INSERT INTO audit_logs (timestamp, branch, action_type, transaction_id, details)
-                VALUES (:ts, :branch, 'تعديل', :tx_id, :details)
+                VALUES (:ts, :branch, 'تعديل مبيعات', :tx_id, :details)
             '''), {
                 "ts": now_str,
                 "branch": branch,
@@ -291,6 +304,77 @@ def update_transaction(tx_id: int, branch: str, new_prints: int, new_amount: flo
                 "prints": new_prints,
                 "amount": new_amount,
                 "id": tx_id
+            })
+            return True
+    return False
+
+# ----------------- EXPENSES HELPER FUNCTIONS -----------------
+def record_expense(branch: str, amount: float, description: str, created_by: str):
+    now_str = get_egypt_now_str()
+    today_str = get_egypt_today_str()
+    with engine.begin() as conn:
+        conn.execute(text('''
+            INSERT INTO expenses (timestamp, date, branch, amount, description, created_by)
+            VALUES (:ts, :date, :branch, :amount, :desc, :user)
+        '''), {
+            "ts": now_str,
+            "date": today_str,
+            "branch": branch,
+            "amount": amount,
+            "desc": description,
+            "user": created_by
+        })
+
+def delete_expense(exp_id: int, branch: str = None):
+    now_str = get_egypt_now_str()
+    with engine.begin() as conn:
+        branch_clause = "AND branch = :branch" if branch and branch != "All" else ""
+        params = {"id": exp_id}
+        if branch and branch != "All":
+            params["branch"] = branch
+            
+        exp = conn.execute(text(f"SELECT * FROM expenses WHERE id = :id {branch_clause}"), params).mappings().fetchone()
+        if exp:
+            conn.execute(text('''
+                INSERT INTO audit_logs (timestamp, branch, action_type, transaction_id, details)
+                VALUES (:ts, :branch, 'حذف مصروف', :tx_id, :details)
+            '''), {
+                "ts": now_str,
+                "branch": exp["branch"],
+                "tx_id": exp_id,
+                "details": f"تم حذف مصروف #{exp_id} بقيمة {exp['amount']} ج.م (الوصف: {exp['description']})"
+            })
+            conn.execute(text("DELETE FROM expenses WHERE id = :id"), {"id": exp_id})
+            return True
+    return False
+
+def update_expense(exp_id: int, new_amount: float, new_desc: str, branch: str = None):
+    now_str = get_egypt_now_str()
+    with engine.begin() as conn:
+        branch_clause = "AND branch = :branch" if branch and branch != "All" else ""
+        params = {"id": exp_id}
+        if branch and branch != "All":
+            params["branch"] = branch
+            
+        exp = conn.execute(text(f"SELECT * FROM expenses WHERE id = :id {branch_clause}"), params).mappings().fetchone()
+        if exp:
+            conn.execute(text('''
+                INSERT INTO audit_logs (timestamp, branch, action_type, transaction_id, details)
+                VALUES (:ts, :branch, 'تعديل مصروف', :tx_id, :details)
+            '''), {
+                "ts": now_str,
+                "branch": exp["branch"],
+                "tx_id": exp_id,
+                "details": f"تعديل مصروف #{exp_id} من ({exp['amount']} ج - {exp['description']}) إلى ({new_amount} ج - {new_desc})"
+            })
+            conn.execute(text('''
+                UPDATE expenses 
+                SET amount = :amount, description = :desc 
+                WHERE id = :id
+            '''), {
+                "amount": new_amount,
+                "desc": new_desc,
+                "id": exp_id
             })
             return True
     return False
@@ -456,10 +540,10 @@ if role == "employee":
                     st.rerun()
 
     st.markdown("<br><hr><br>", unsafe_allow_html=True)
-    col_manual, col_restock = st.columns(2)
+    col_manual, col_restock, col_exp = st.columns(3)
     
     with col_manual:
-        with st.expander("⚙️ إدخال يدوي", expanded=False):
+        with st.expander("⚙️ إدخال مبيعات يدوي", expanded=False):
             with st.form("manual_form", clear_on_submit=True):
                 prints = st.number_input("عدد الورق المطبوع", min_value=1, max_value=50, value=None, step=1, placeholder="أدخل عدد الورق...")
                 amount = st.number_input("المبلغ المدفوع", min_value=0.0, value=None, step=10.0, placeholder="أدخل المبلغ...")
@@ -487,11 +571,25 @@ if role == "employee":
                     st.success("تم التزويد بنجاح!")
                     st.rerun()
 
+    with col_exp:
+        with st.expander("💸 تسجيل مصروفات الوردية", expanded=False):
+            with st.form("employee_expense_form", clear_on_submit=True):
+                exp_amount = st.number_input("مبلغ المصروف (ج.م)", min_value=1.0, value=None, step=5.0, placeholder="أدخل المبلغ...")
+                exp_desc = st.text_input("وصف المصروف", placeholder="مثال: شاي، صيانة، نثريات...")
+                submit_exp = st.form_submit_button("💸 تسجيل المصروف", use_container_width=True)
+                if submit_exp:
+                    if exp_amount is None or not exp_desc.strip():
+                        st.error("⚠️ يرجى إدخال المبلغ ووصف المصروف!")
+                    else:
+                        record_expense(branch, float(exp_amount), exp_desc.strip(), f"موظف {branch}")
+                        st.success("تم تسجيل المصروف بنجاح!")
+                        st.rerun()
+
     st.markdown("---")
     st.subheader("📋 عمليات يوم العمل الحالي (اليوم بالكامل)")
     
+    today_str = get_egypt_today_str()
     with engine.connect() as conn:
-        today_str = get_egypt_today_str()
         today_tx = pd.read_sql_query(
             text('''
             SELECT t.id, t.timestamp, t.prints_count, t.amount_paid
@@ -512,14 +610,13 @@ if role == "employee":
             })
             st.dataframe(display_user_tx.drop(columns=['id']), use_container_width=True, hide_index=True)
             
-            st.markdown("##### 🛠️ إدارة / تعديل / حذف عملية من اليوم")
+            st.markdown("##### 🛠️ إدارة / تعديل / حذف مبيعات اليوم")
             options = {f"عملية #{row['id']} - الساعة {row['timestamp'].split(' ')[1]} ({row['prints_count']} ورق | {row['amount_paid']} ج)": row['id'] for _, row in today_tx.iterrows()}
-            selected_label = st.selectbox("اختر العملية للتحكم بها:", list(options.keys()))
+            selected_label = st.selectbox("اختر العملية للتحكم بها:", list(options.keys()), key="sel_tx")
             selected_id = options[selected_label]
             selected_row = today_tx[today_tx['id'] == selected_id].iloc[0]
             
             col_act1, col_act2 = st.columns(2)
-            
             with col_act1:
                 with st.expander("✏️ تعديل العملية المحددة", expanded=False):
                     with st.form("edit_form"):
@@ -534,12 +631,50 @@ if role == "employee":
             with col_act2:
                 with st.expander("🗑️ حذف العملية المحددة", expanded=False):
                     st.warning(f"هل أنت متأكد من حذف العملية #{selected_id}؟ سيتم استرجاع الورق للمخزون وتسجيل الحذف.")
-                    if st.button("تأكيد الحذف نهائياً", type="primary", use_container_width=True):
+                    if st.button("تأكيد الحذف نهائياً", type="primary", use_container_width=True, key="del_tx_btn"):
                         if delete_transaction(selected_id, branch):
                             st.success("تم مسح العملية واسترجاع الورق بنجاح!")
                             st.rerun()
         else:
-            st.info("لا توجد عمليات مسجلة في يوم العمل الحالي حتى الآن.")
+            st.info("لا توجد مبيعات مسجلة في يوم العمل الحالي حتى الآن.")
+
+    st.markdown("---")
+    st.subheader("💸 مصروفات يوم العمل الحالي")
+    with engine.connect() as conn:
+        today_exp_df = pd.read_sql_query(
+            text("SELECT id, timestamp, amount, description FROM expenses WHERE date = :date AND branch = :branch ORDER BY timestamp DESC"),
+            conn,
+            params={"date": today_str, "branch": branch}
+        )
+        if not today_exp_df.empty:
+            disp_exp = today_exp_df.rename(columns={'timestamp': 'الوقت', 'amount': 'المبلغ (ج.م)', 'description': 'الوصف'})
+            st.dataframe(disp_exp.drop(columns=['id']), use_container_width=True, hide_index=True)
+            
+            st.markdown("##### 🛠️ إدارة / تعديل / حذف مصروف من اليوم")
+            exp_opts = {f"مصروف #{r['id']} - الساعة {r['timestamp'].split(' ')[1]} ({r['amount']} ج | {r['description']})": r['id'] for _, r in today_exp_df.iterrows()}
+            sel_exp_label = st.selectbox("اختر المصروف للتحكم به:", list(exp_opts.keys()), key="sel_exp")
+            sel_exp_id = exp_opts[sel_exp_label]
+            sel_exp_row = today_exp_df[today_exp_df['id'] == sel_exp_id].iloc[0]
+            
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                with st.expander("✏️ تعديل المصروف المحدد", expanded=False):
+                    with st.form("edit_exp_form"):
+                        new_ea = st.number_input("تعديل المبلغ:", min_value=1.0, value=float(sel_exp_row['amount']), step=5.0)
+                        new_ed = st.text_input("تعديل الوصف:", value=str(sel_exp_row['description']))
+                        if st.form_submit_button("حفظ تعديل المصروف", use_container_width=True):
+                            if update_expense(sel_exp_id, new_ea, new_ed, branch):
+                                st.success("تم تعديل المصروف بنجاح!")
+                                st.rerun()
+            with col_e2:
+                with st.expander("🗑️ حذف المصروف المحدد", expanded=False):
+                    st.warning(f"هل أنت متأكد من حذف المصروف #{sel_exp_id}؟")
+                    if st.button("تأكيد حذف المصروف نهائياً", type="primary", use_container_width=True, key="del_exp_btn"):
+                        if delete_expense(sel_exp_id, branch):
+                            st.success("تم حذف المصروف بنجاح!")
+                            st.rerun()
+        else:
+            st.info("لا توجد مصروفات مسجلة في هذا الفرع لليوم الحالي.")
 
 # ================= 2. ADMIN DASHBOARD =================
 elif role == "admin":
@@ -550,36 +685,19 @@ elif role == "admin":
     st.sidebar.subheader("🏢 فلتر الفرع")
     selected_branch = st.sidebar.selectbox("اختر الفرع للتحليل:", ["الكل", "Heaven", "9A"])
     
-    branch_filter_tx = ""
-    branch_params = {}
-    if selected_branch != "الكل":
-        branch_filter_tx = "WHERE t.branch = :branch"
-        branch_params = {"branch": selected_branch}
-        
     with engine.connect() as conn:
-        query_all_tx = f'''
+        all_tx_raw = pd.read_sql_query(text('''
             SELECT t.*, d.date 
             FROM transactions t
             JOIN days d ON t.day_id = d.id
-            {branch_filter_tx}
             ORDER BY t.timestamp ASC
-        '''
-        all_tx_df = pd.read_sql_query(text(query_all_tx), conn, params=branch_params)
+        '''), conn)
         
-        if not all_tx_df.empty:
-            days_df = all_tx_df.groupby('date').agg(
-                first_customer_time=('timestamp', 'min'),
-                last_customer_time=('timestamp', 'max'),
-                total_customers=('id', 'count'),
-                total_prints=('prints_count', 'sum'),
-                total_revenue=('amount_paid', 'sum')
-            ).reset_index()
-        else:
-            days_df = pd.DataFrame()
+        all_exp_raw = pd.read_sql_query(text("SELECT * FROM expenses ORDER BY timestamp ASC"), conn)
 
-    if not days_df.empty:
-        min_date = pd.to_datetime(days_df['date']).dt.date.min()
-        max_date = pd.to_datetime(days_df['date']).dt.date.max()
+    if not all_tx_raw.empty:
+        min_date = pd.to_datetime(all_tx_raw['date']).dt.date.min()
+        max_date = pd.to_datetime(all_tx_raw['date']).dt.date.max()
         
         st.sidebar.markdown("---")
         st.sidebar.subheader("📅 فلاتر التاريخ")
@@ -592,15 +710,42 @@ elif role == "admin":
         
         if len(date_range) == 2:
             start_dt, end_dt = date_range
-            mask_days = (pd.to_datetime(days_df['date']).dt.date >= start_dt) & (pd.to_datetime(days_df['date']).dt.date <= end_dt)
-            mask_tx = (pd.to_datetime(all_tx_df['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_df['date']).dt.date <= end_dt)
+            mask_tx_date = (pd.to_datetime(all_tx_raw['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_raw['date']).dt.date <= end_dt)
+            filtered_tx = all_tx_raw.loc[mask_tx_date].copy()
             
-            filtered_days = days_df.loc[mask_days].copy()
-            filtered_tx = all_tx_df.loc[mask_tx].copy()
+            if not all_exp_raw.empty:
+                mask_exp_date = (pd.to_datetime(all_exp_raw['date']).dt.date >= start_dt) & (pd.to_datetime(all_exp_raw['date']).dt.date <= end_dt)
+                filtered_exp = all_exp_raw.loc[mask_exp_date].copy()
+            else:
+                filtered_exp = pd.DataFrame()
         else:
-            filtered_days = days_df.copy()
-            filtered_tx = all_tx_df.copy()
+            filtered_tx = all_tx_raw.copy()
+            filtered_exp = all_exp_raw.copy()
 
+        # حساب المصروفات وفق الفلتر
+        if selected_branch == "الكل":
+            tx_subset = filtered_tx
+            total_rev_all = tx_subset['amount_paid'].sum() if not tx_subset.empty else 0
+            total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
+            total_cust_all = len(tx_subset)
+            total_exp_all = filtered_exp['amount'].sum() if not filtered_exp.empty else 0
+        else:
+            tx_subset = filtered_tx[filtered_tx['branch'] == selected_branch]
+            total_rev_all = tx_subset['amount_paid'].sum() if not tx_subset.empty else 0
+            total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
+            total_cust_all = len(tx_subset)
+            
+            if not filtered_exp.empty:
+                direct_exp = filtered_exp[filtered_exp['branch'] == selected_branch]['amount'].sum()
+                general_exp = filtered_exp[filtered_exp['branch'] == 'General']['amount'].sum()
+                # تحميل الفرع بنصف المصاريف العامة
+                total_exp_all = direct_exp + (general_exp / 2.0)
+            else:
+                total_exp_all = 0.0
+
+        net_profit = total_rev_all - total_exp_all
+
+        # مؤشرات المخزون والتالف
         if selected_branch == "الكل":
             stock_heaven = get_current_stock("Heaven")
             stock_9a = get_current_stock("9A")
@@ -612,70 +757,129 @@ elif role == "admin":
             stock_display = f"{get_current_stock(selected_branch)} ورقة"
             waste_display = f"{get_waste_count(selected_branch)} ورقة"
 
-        # Top KPIs
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        total_rev_all = filtered_days['total_revenue'].sum() if not filtered_days.empty else 0
-        total_prints_all = filtered_days['total_prints'].sum() if not filtered_days.empty else 0
-        total_cust_all = filtered_days['total_customers'].sum() if not filtered_days.empty else 0
-        
+        # Top Financial KPIs
+        kpi1, kpi2, kpi3 = st.columns(3)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
-        kpi2.metric("👥 إجمالي الزبائن", f"{total_cust_all:,}")
-        kpi3.metric("🖨️ الورق المطبوع", f"{total_prints_all:,} ورقة")
-        kpi4.metric("🗑️ إجمالي التالف", waste_display)
-        
+        kpi2.metric("💸 إجمالي المصروفات", f"{total_exp_all:,.0f} ج.م", delta=f"-{total_exp_all:,.0f}", delta_color="inverse")
+        kpi3.metric("📈 صافي الربح", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}")
+
+        kpi4, kpi5, kpi6 = st.columns(3)
+        kpi4.metric("👥 إجمالي الزبائن", f"{total_cust_all:,}")
+        kpi5.metric("🖨️ الورق المطبوع", f"{total_prints_all:,} ورقة")
+        kpi6.metric("🗑️ إجمالي التالف", waste_display)
+
         st.metric("📦 المخزون المتبقي حالياً", stock_display)
         
         st.markdown("---")
 
+        # ----------------- ADMIN EXPENSES ENTRY -----------------
+        with st.expander("💸 تسجيل مصروفات جديدة بواسطة الأدمن", expanded=False):
+            with st.form("admin_exp_form", clear_on_submit=True):
+                c_a1, c_a2, c_a3 = st.columns(3)
+                with c_a1:
+                    ad_branch = st.selectbox("جهة المصروف:", ["General", "Heaven", "9A"], format_func=lambda x: "مصروف بيزنس عام (يوزع على الفرعين)" if x == "General" else f"فرع {x}")
+                with c_a2:
+                    ad_amount = st.number_input("المبلغ (ج.م):", min_value=1.0, value=None, step=50.0, placeholder="أدخل المبلغ...")
+                with c_a3:
+                    ad_desc = st.text_input("وصف المصروف:", placeholder="مثال: شراء ورق، صيانة، تسويق...")
+                
+                if st.form_submit_button("تسجيل المصروف للأدمن", use_container_width=True):
+                    if ad_amount is None or not ad_desc.strip():
+                        st.error("⚠️ يرجى إدخال المبلغ والوصف أولاً!")
+                    else:
+                        record_expense(ad_branch, float(ad_amount), ad_desc.strip(), "المدير")
+                        st.success("تم تسجيل المصروف بنجاح!")
+                        st.rerun()
+
+        st.markdown("---")
+
         # ----------------- TODAY'S LIVE TRANSACTIONS FOR ADMIN -----------------
         today_b_str = get_egypt_today_str()
-        st.subheader(f"⚡ عمليات يوم العمل الحالي ({selected_branch}) - {today_b_str}")
+        st.subheader(f"⚡ عمليات ومصروفات يوم العمل الحالي ({selected_branch}) - {today_b_str}")
         
-        with engine.connect() as conn:
-            admin_today_branch_filter = ""
-            admin_today_params = {"date": today_b_str}
-            if selected_branch != "الكل":
-                admin_today_branch_filter = "AND t.branch = :branch"
-                admin_today_params["branch"] = selected_branch
+        col_tab1, col_tab2 = st.columns(2)
+        with col_tab1:
+            st.markdown("##### 🛒 مبيعات اليوم")
+            with engine.connect() as conn:
+                admin_today_branch_filter = ""
+                admin_today_params = {"date": today_b_str}
+                if selected_branch != "الكل":
+                    admin_today_branch_filter = "AND t.branch = :branch"
+                    admin_today_params["branch"] = selected_branch
 
-            today_admin_tx = pd.read_sql_query(
-                text(f'''
-                SELECT t.timestamp, t.branch, t.prints_count, t.amount_paid
-                FROM transactions t
-                JOIN days d ON t.day_id = d.id
-                WHERE d.date = :date {admin_today_branch_filter}
-                ORDER BY t.timestamp DESC
-                '''),
-                conn,
-                params=admin_today_params
-            )
+                today_admin_tx = pd.read_sql_query(
+                    text(f'''
+                    SELECT t.timestamp, t.branch, t.prints_count, t.amount_paid
+                    FROM transactions t
+                    JOIN days d ON t.day_id = d.id
+                    WHERE d.date = :date {admin_today_branch_filter}
+                    ORDER BY t.timestamp DESC
+                    '''),
+                    conn,
+                    params=admin_today_params
+                )
 
-        if not today_admin_tx.empty:
-            display_admin_today = today_admin_tx.rename(columns={
-                'timestamp': 'الوقت',
-                'branch': 'الفرع',
-                'prints_count': 'عدد الورق',
-                'amount_paid': 'المبلغ (ج.م)'
-            })
-            st.dataframe(display_admin_today, use_container_width=True, hide_index=True)
-        else:
-            st.info("لا توجد عمليات مسجلة في هذا اليوم حتى الآن.")
+            if not today_admin_tx.empty:
+                display_admin_today = today_admin_tx.rename(columns={
+                    'timestamp': 'الوقت',
+                    'branch': 'الفرع',
+                    'prints_count': 'عدد الورق',
+                    'amount_paid': 'المبلغ (ج.م)'
+                })
+                st.dataframe(display_admin_today, use_container_width=True, hide_index=True)
+            else:
+                st.info("لا توجد مبيعات مسجلة اليوم حتى الآن.")
+
+        with col_tab2:
+            st.markdown("##### 💸 مصروفات اليوم")
+            with engine.connect() as conn:
+                ad_exp_f = ""
+                ad_exp_p = {"date": today_b_str}
+                if selected_branch != "الكل":
+                    ad_exp_f = "AND (branch = :branch OR branch = 'General')"
+                    ad_exp_p["branch"] = selected_branch
+
+                today_admin_exp = pd.read_sql_query(
+                    text(f"SELECT timestamp, branch, amount, description, created_by FROM expenses WHERE date = :date {ad_exp_f} ORDER BY timestamp DESC"),
+                    conn,
+                    params=ad_exp_p
+                )
+            if not today_admin_exp.empty:
+                disp_ad_exp = today_admin_exp.rename(columns={
+                    'timestamp': 'الوقت',
+                    'branch': 'الفرع',
+                    'amount': 'المبلغ (ج.م)',
+                    'description': 'الوصف',
+                    'created_by': 'بواسطة'
+                })
+                st.dataframe(disp_ad_exp, use_container_width=True, hide_index=True)
+            else:
+                st.info("لا توجد مصروفات مسجلة اليوم حتى الآن.")
 
         st.markdown("---")
         
-        if not filtered_days.empty:
+        # ----------------- CHARTS & BEHAVIOR -----------------
+        if not tx_subset.empty:
+            days_df = tx_subset.groupby('date').agg(
+                first_customer_time=('timestamp', 'min'),
+                last_customer_time=('timestamp', 'max'),
+                total_customers=('id', 'count'),
+                total_prints=('prints_count', 'sum'),
+                total_revenue=('amount_paid', 'sum')
+            ).reset_index()
+            
             ARABIC_DAYS = {
                 "Monday": "الإثنين", "Tuesday": "الثلاثاء", "Wednesday": "الأربعاء",
                 "Thursday": "الخميس", "Friday": "الجمعة", "Saturday": "السبت", "Sunday": "الأحد"
             }
             
-            filtered_tx['hour'] = pd.to_datetime(filtered_tx['timestamp']).dt.hour
-            peak_hours = filtered_tx.groupby(['date', 'hour'])['id'].count().reset_index()
+            tx_subset['hour'] = pd.to_datetime(tx_subset['timestamp']).dt.hour
+            peak_hours = tx_subset.groupby(['date', 'hour'])['id'].count().reset_index()
             peak_hours = peak_hours.sort_values(['date', 'id'], ascending=[True, False])
             peak_hours = peak_hours.drop_duplicates(subset=['date'])
             peak_hours = peak_hours.rename(columns={'hour': 'peak_hour'})[['date', 'peak_hour']]
             
-            behavior_df = filtered_days.merge(peak_hours, on='date', how='left')
+            behavior_df = days_df.merge(peak_hours, on='date', how='left')
             behavior_df['date_obj'] = pd.to_datetime(behavior_df['date'])
             behavior_df['day_name'] = behavior_df['date_obj'].dt.day_name().map(ARABIC_DAYS)
             
@@ -698,12 +902,12 @@ elif role == "admin":
                 st.subheader("📉 الإيرادات والزبائن خلال الفترة")
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
-                    x=filtered_days['date'], y=filtered_days['total_revenue'],
+                    x=days_df['date'], y=days_df['total_revenue'],
                     mode='lines+markers', name='الإيراد',
                     line=dict(color='#00CC96', width=3)
                 ))
                 fig.add_trace(go.Bar(
-                    x=filtered_days['date'], y=filtered_days['total_customers'],
+                    x=days_df['date'], y=days_df['total_customers'],
                     name='عدد الزبائن', yaxis='y2',
                     marker_color='rgba(99, 110, 250, 0.5)'
                 ))
@@ -728,12 +932,11 @@ elif role == "admin":
                 st.plotly_chart(fig_week, use_container_width=True)
             
             st.subheader("🔥 ساعات الذروة الإجمالية في هذه الفترة")
-            if not filtered_tx.empty:
-                hourly = filtered_tx.groupby('hour')['id'].count().reset_index().rename(columns={'id': 'الزيارات'})
-                hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x}:00")
-                fig_hour = px.bar(hourly, x='hour_str', y='الزيارات', color='الزيارات',
-                                  labels={'hour_str': 'الساعة'}, color_continuous_scale='Sunset')
-                st.plotly_chart(fig_hour, use_container_width=True)
+            hourly = tx_subset.groupby('hour')['id'].count().reset_index().rename(columns={'id': 'الزيارات'})
+            hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x}:00")
+            fig_hour = px.bar(hourly, x='hour_str', y='الزيارات', color='الزيارات',
+                              labels={'hour_str': 'الساعة'}, color_continuous_scale='Sunset')
+            st.plotly_chart(fig_hour, use_container_width=True)
         else:
             st.warning("لا توجد بيانات مسجلة في الفترة المحددة.")
     else:
@@ -742,7 +945,7 @@ elif role == "admin":
     # --- AUDIT LOGS SECTION FOR ADMIN ---
     st.markdown("---")
     st.subheader("🕵️ سجل المراقبة والتعديلات (Audit Logs)")
-    st.caption("سجل مفصل يوضح كل عملية تم حذفها أو تعديلها من قبل الموظفين وتوقيتها الدقيق.")
+    st.caption("سجل مفصل يوضح كل عملية أو مصروف تم حذفها أو تعديلها من قبل الموظفين وتوقيتها الدقيق.")
     
     with engine.connect() as conn:
         audit_filter = ""
@@ -818,7 +1021,7 @@ elif role == "admin":
     # --- BACKUP SECTION ---
     st.markdown("---")
     st.subheader("📥 النسخ الاحتياطي للبيانات (Backup)")
-    st.caption("تقدر تحمل كل بيانات المبيعات بتاعتك في أي وقت كملف إكسيل (CSV) عشان تحتفظ بيها على جهازك.")
+    st.caption("تقدر تحمل كل بيانات المبيعات والمصروفات كملفات إكسيل (CSV).")
     
     with engine.connect() as conn:
         all_backup_tx = pd.read_sql_query(text('''
@@ -828,6 +1031,11 @@ elif role == "admin":
             ORDER BY t.timestamp DESC
         '''), conn)
         
+        all_backup_exp = pd.read_sql_query(text("SELECT * FROM expenses ORDER BY timestamp DESC"), conn)
+        
+    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+    today_date_str = get_egypt_today_str()
+    
     if not all_backup_tx.empty:
         all_backup_tx_display = all_backup_tx.rename(columns={
             'timestamp': 'الوقت',
@@ -836,14 +1044,11 @@ elif role == "admin":
             'amount_paid': 'المبلغ (ج.م)',
             'branch': 'الفرع'
         })
-        col_b1, col_b2, col_b3 = st.columns(3)
-        today_date_str = get_egypt_today_str()
-        
         csv_all = all_backup_tx_display.to_csv(index=False).encode('utf-8-sig')
         col_b1.download_button(
-            label="📥 تحميل المبيعات مجمعة (الكل)",
+            label="📥 تحميل المبيعات (الكل)",
             data=csv_all,
-            file_name=f"all_branches_backup_{today_date_str}.csv",
+            file_name=f"all_sales_{today_date_str}.csv",
             mime="text/csv",
             use_container_width=True
         )
@@ -852,9 +1057,9 @@ elif role == "admin":
         if not df_heaven.empty:
             csv_heaven = df_heaven.to_csv(index=False).encode('utf-8-sig')
             col_b2.download_button(
-                label="📥 مبيعات فرع Heaven",
+                label="📥 مبيعات Heaven",
                 data=csv_heaven,
-                file_name=f"heaven_backup_{today_date_str}.csv",
+                file_name=f"heaven_sales_{today_date_str}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
@@ -863,10 +1068,20 @@ elif role == "admin":
         if not df_9a.empty:
             csv_9a = df_9a.to_csv(index=False).encode('utf-8-sig')
             col_b3.download_button(
-                label="📥 مبيعات فرع 9A",
+                label="📥 مبيعات 9A",
                 data=csv_9a,
-                file_name=f"9a_backup_{today_date_str}.csv",
+                file_name=f"9a_sales_{today_date_str}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
+            
+    if not all_backup_exp.empty:
+        csv_exp = all_backup_exp.to_csv(index=False).encode('utf-8-sig')
+        col_b4.download_button(
+            label="📥 تحميل كل المصروفات",
+            data=csv_exp,
+            file_name=f"all_expenses_{today_date_str}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
