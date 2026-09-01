@@ -23,11 +23,14 @@ def get_egypt_today_str():
 # ----------------- APP CONFIG -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
 
+# إخفاء الـ Sidebar والقوائم الافتراضية بالكامل
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
     footer {visibility: hidden;}
+    [data-testid="stSidebar"] {display: none;}
+    [data-testid="collapsedControl"] {display: none;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -425,20 +428,24 @@ if not st.session_state.logged_in:
     login()
     st.stop()
 
-# ----------------- SIDEBAR -----------------
-st.sidebar.markdown(f"### 👋 مرحباً، {st.session_state.branch if st.session_state.role == 'employee' else 'المدير'}")
-st.sidebar.button("🚪 تسجيل الخروج", on_click=logout, use_container_width=True)
-st.sidebar.markdown("---")
-
 role = st.session_state.role
 branch = st.session_state.branch
 
 # ================= 1. EMPLOYEE SCREEN =================
 if role == "employee":
     current_stock = get_current_stock(branch)
-    st.sidebar.metric(f"📦 رصيد الورق", f"{current_stock} ورقة")
-    st.sidebar.caption(f"🕒 توقيت النظام: {get_egypt_now().strftime('%I:%M %p')}")
-    st.sidebar.caption(f"📅 يوم العمل: {get_egypt_today_str()}")
+
+    # --- شريط علوي للموظف (Top Bar) ---
+    top_c1, top_c2, top_c3, top_c4 = st.columns([3, 2, 2, 1])
+    with top_c1:
+        st.markdown(f"#### 👋 فرع: **{branch}** | 📦 الرصيد: **{current_stock} ورقة**")
+    with top_c2:
+        st.caption(f"📅 يوم العمل: **{get_egypt_today_str()}**")
+    with top_c3:
+        st.caption(f"🕒 التوقيت: **{get_egypt_now().strftime('%I:%M %p')}**")
+    with top_c4:
+        st.button("🚪 خروج", on_click=logout, use_container_width=True)
+    st.markdown("---")
     
     st.markdown("""
         <style>
@@ -680,11 +687,6 @@ if role == "employee":
 elif role == "admin":
     check_and_add_monthly_allowance()
 
-    st.title("📊 لوحة تحكم الإدارة (Admin Analytics)")
-    
-    st.sidebar.subheader("🏢 فلتر الفرع")
-    selected_branch = st.sidebar.selectbox("اختر الفرع للتحليل:", ["الكل", "Heaven", "9A"])
-    
     with engine.connect() as conn:
         all_tx_raw = pd.read_sql_query(text('''
             SELECT t.*, d.date 
@@ -695,19 +697,29 @@ elif role == "admin":
         
         all_exp_raw = pd.read_sql_query(text("SELECT * FROM expenses ORDER BY timestamp ASC"), conn)
 
+    # حساب التواريخ الافتراضية للفلاتر
     if not all_tx_raw.empty:
         min_date = pd.to_datetime(all_tx_raw['date']).dt.date.min()
         max_date = pd.to_datetime(all_tx_raw['date']).dt.date.max()
-        
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("📅 فلاتر التاريخ")
-        date_range = st.sidebar.date_input(
-            "اختر الفترة الزمنية للتحليل:",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date
-        )
-        
+    else:
+        min_date = date.today()
+        max_date = date.today()
+
+    # --- شريط علوي للأدمن (Top Bar: العنوان + الترحيب + الفلاتر + الخروج) ---
+    bar_col1, bar_col2, bar_col3, bar_col4 = st.columns([3, 2, 3, 1])
+    with bar_col1:
+        st.markdown("## 📊 لوحة تحكم الإدارة")
+        st.caption(f"👋 مرحباً بالمدير | توقيت النظام: {get_egypt_now().strftime('%I:%M %p')}")
+    with bar_col2:
+        selected_branch = st.selectbox("🏢 الفرع:", ["الكل", "Heaven", "9A"])
+    with bar_col3:
+        date_range = st.date_input("📅 الفترة الزمنية:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+    with bar_col4:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.button("🚪 خروج", on_click=logout, use_container_width=True)
+    st.markdown("---")
+
+    if not all_tx_raw.empty:
         if len(date_range) == 2:
             start_dt, end_dt = date_range
             mask_tx_date = (pd.to_datetime(all_tx_raw['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_raw['date']).dt.date <= end_dt)
@@ -762,10 +774,8 @@ elif role == "admin":
         # Top Financial KPIs
         kpi1, kpi2, kpi3 = st.columns(3)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
-        # الجديد:
         kpi2.metric("💸 إجمالي المصروفات", f"{total_exp_all:,.0f} ج.م", delta=f"-{total_exp_all:,.0f}", delta_color="normal")
         kpi3.metric("📈 صافي الربح", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
-
 
         kpi4, kpi5, kpi6 = st.columns(3)
         kpi4.metric("👥 إجمالي الزبائن", f"{total_cust_all:,}")
@@ -963,7 +973,7 @@ elif role == "admin":
     st.markdown("---")
     st.subheader("🕵️ سجل المراقبة والتعديلات (Audit Logs)")
     st.caption("سجل مفصل يوضح كل عملية أو مصروف تم حذفها أو تعديلها من قبل الموظفين وتوقيتها الدقيق.")
-    
+
     with engine.connect() as conn:
         audit_filter = ""
         audit_params = {}
