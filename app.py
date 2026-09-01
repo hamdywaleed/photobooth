@@ -207,10 +207,9 @@ def record_waste(branch: str, quantity: int = 1, notes: str = "ورقة تالف
             "branch": branch
         })
 
-def record_transaction(branch: str, prints_count: int, amount_paid: float, custom_date: str = None, affect_inventory: bool = True):
+def record_transaction(branch: str, prints_count: int, amount_paid: float):
     now_str = get_egypt_now_str()
-    today_str = custom_date if custom_date else get_egypt_today_str()
-    tx_timestamp = f"{today_str} 21:00:00" if custom_date else now_str
+    today_str = get_egypt_today_str()
     
     with engine.begin() as conn:
         row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": today_str}).fetchone()
@@ -230,22 +229,20 @@ def record_transaction(branch: str, prints_count: int, amount_paid: float, custo
             VALUES (:day_id, :ts, :prints, :amount, :branch)
         '''), {
             "day_id": day_id,
-            "ts": tx_timestamp,
+            "ts": now_str,
             "prints": prints_count,
             "amount": amount_paid,
             "branch": branch
         })
         
-        if affect_inventory:
-            conn.execute(text('''
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'consumption', :qty, :notes, :branch)
-            '''), {
-                "ts": tx_timestamp,
-                "qty": -prints_count,
-                "notes": f"استهلاك معاملة {today_str}",
-                "branch": branch
-            })
+        conn.execute(text('''
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'consumption', :qty, 'Transaction consumption', :branch)
+        '''), {
+            "ts": now_str,
+            "qty": -prints_count,
+            "branch": branch
+        })
 
 def delete_transaction(tx_id: int, branch: str):
     now_str = get_egypt_now_str()
@@ -312,16 +309,15 @@ def update_transaction(tx_id: int, branch: str, new_prints: int, new_amount: flo
     return False
 
 # ----------------- EXPENSES HELPER FUNCTIONS -----------------
-def record_expense(branch: str, amount: float, description: str, created_by: str, custom_date: str = None):
+def record_expense(branch: str, amount: float, description: str, created_by: str):
     now_str = get_egypt_now_str()
-    today_str = custom_date if custom_date else get_egypt_today_str()
-    tx_timestamp = f"{today_str} 21:00:00" if custom_date else now_str
+    today_str = get_egypt_today_str()
     with engine.begin() as conn:
         conn.execute(text('''
             INSERT INTO expenses (timestamp, date, branch, amount, description, created_by)
             VALUES (:ts, :date, :branch, :amount, :desc, :user)
         '''), {
-            "ts": tx_timestamp,
+            "ts": now_str,
             "date": today_str,
             "branch": branch,
             "amount": amount,
@@ -390,8 +386,6 @@ if 'role' not in st.session_state:
     st.session_state.role = None
 if 'branch' not in st.session_state:
     st.session_state.branch = None
-if 'view_mode' not in st.session_state:
-    st.session_state.view_mode = "main"
 
 def login():
     st.markdown("<h1 style='text-align: center;'>🔐 تسجيل الدخول للأنظمة</h1>", unsafe_allow_html=True)
@@ -426,7 +420,6 @@ def logout():
     st.session_state.logged_in = False
     st.session_state.role = None
     st.session_state.branch = None
-    st.session_state.view_mode = "main"
 
 if not st.session_state.logged_in:
     login()
@@ -434,90 +427,14 @@ if not st.session_state.logged_in:
 
 # ----------------- SIDEBAR -----------------
 st.sidebar.markdown(f"### 👋 مرحباً، {st.session_state.branch if st.session_state.role == 'employee' else 'المدير'}")
-
-if st.session_state.view_mode == "main":
-    if st.sidebar.button("⏳ تفريغ الدفاتر القديمة", use_container_width=True):
-        st.session_state.view_mode = "bulk_entry"
-        st.rerun()
-else:
-    if st.sidebar.button("⬅️ العودة للبرنامج الرئيسي", use_container_width=True):
-        st.session_state.view_mode = "main"
-        st.rerun()
-
 st.sidebar.button("🚪 تسجيل الخروج", on_click=logout, use_container_width=True)
 st.sidebar.markdown("---")
 
 role = st.session_state.role
 branch = st.session_state.branch
 
-# ================= 0. BULK ENTRY SCREEN (استرجاع الدفاتر المؤقت) =================
-if st.session_state.view_mode == "bulk_entry":
-    st.title("⏳ تفريغ البيانات القديمة (بدون المساس بالمخزون)")
-    st.caption("أداة سريعة لحفظ الأيام المتتالية دون خصم ورق من الرصيد الحالي.")
-    
-    if role == "admin":
-        target_b = st.selectbox("اختر الفرع لتسجيل البيانات القديمة:", ["Heaven", "9A"])
-    else:
-        target_b = branch
-        st.info(f"الفرع المحدد: **{target_b}**")
-
-    if 'bulk_date' not in st.session_state:
-        st.session_state.bulk_date = date(2026, 6, 12)
-
-    AR_DAYS = {"Monday": "الإثنين", "Tuesday": "الثلاثاء", "Wednesday": "الأربعاء", "Thursday": "الخميس", "Friday": "الجمعة", "Saturday": "السبت", "Sunday": "الأحد"}
-    curr_bulk_str = st.session_state.bulk_date.strftime("%Y-%m-%d")
-    day_name_ar = AR_DAYS.get(st.session_state.bulk_date.strftime("%A"), "")
-
-    st.markdown(f"### 📅 اليوم المطلوب إدخاله: **{day_name_ar} {curr_bulk_str}**")
-
-    with st.form("bulk_form_direct", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            b_prints = st.number_input(f"عدد الورق المطبوع يوم ({curr_bulk_str}):", min_value=0, max_value=5000, value=None, step=1, placeholder="أدخل عدد الورق...")
-        with c2:
-            b_amount = st.number_input(f"إجمالي المبلغ (ج.م):", min_value=0.0, value=None, step=10.0, placeholder="أدخل المبلغ...")
-            
-        save_day = st.form_submit_button("💾 حفظ هذا اليوم والانتقال لليوم التالي ⬅️", use_container_width=True)
-        if save_day:
-            if b_prints is None or b_amount is None:
-                st.error("⚠️ يرجى إدخال البيانات أولاً!")
-            else:
-                record_transaction(target_b, int(b_prints), float(b_amount), custom_date=curr_bulk_str, affect_inventory=False)
-                st.session_state.bulk_date += timedelta(days=1)
-                st.success(f"✅ تم حفظ يوم {curr_bulk_str} والانتقال لليوم التالي.")
-                st.rerun()
-
-    c_btn1, c_btn2 = st.columns(2)
-    with c_btn1:
-        if st.button("🏖️ هذا اليوم كان إجازة (تخطي لليوم التالي) ⏭️", use_container_width=True):
-            st.session_state.bulk_date += timedelta(days=1)
-            st.warning(f"⏩ تم تخطي يوم {curr_bulk_str}.")
-            st.rerun()
-    with c_btn2:
-        manual_d = st.date_input("تغيير تاريخ الإدخال يدوياً:", value=st.session_state.bulk_date)
-        if manual_d != st.session_state.bulk_date:
-            st.session_state.bulk_date = manual_d
-            st.rerun()
-
-    st.markdown("---")
-    st.subheader("📋 آخر أيام تم تسجيلها في هذا الفرع")
-    with engine.connect() as conn:
-        df_logged = pd.read_sql_query(
-            text('''
-            SELECT d.date as "التاريخ", t.prints_count as "عدد الورق", t.amount_paid as "المبلغ (ج.م)"
-            FROM transactions t
-            JOIN days d ON t.day_id = d.id
-            WHERE t.branch = :branch
-            ORDER BY d.date DESC LIMIT 10
-            '''),
-            conn,
-            params={"branch": target_b}
-        )
-        if not df_logged.empty:
-            st.dataframe(df_logged, use_container_width=True, hide_index=True)
-
 # ================= 1. EMPLOYEE SCREEN =================
-elif role == "employee":
+if role == "employee":
     current_stock = get_current_stock(branch)
     st.sidebar.metric(f"📦 رصيد الورق", f"{current_stock} ورقة")
     st.sidebar.caption(f"🕒 توقيت النظام: {get_egypt_now().strftime('%I:%M %p')}")
@@ -821,6 +738,7 @@ elif role == "admin":
             if not filtered_exp.empty:
                 direct_exp = filtered_exp[filtered_exp['branch'] == selected_branch]['amount'].sum()
                 general_exp = filtered_exp[filtered_exp['branch'] == 'General']['amount'].sum()
+                # تحميل الفرع بنصف المصاريف العامة
                 total_exp_all = direct_exp + (general_exp / 2.0)
             else:
                 total_exp_all = 0.0
