@@ -926,7 +926,7 @@ elif role == "admin":
 
         st.markdown("---")
 
-        # ----------------- CHARTS & ANALYTICS -----------------
+        # ----------------- CHARTS & ANALYTICS (REVENUE FOCUSED) -----------------
         if not tx_subset.empty:
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
@@ -951,22 +951,48 @@ elif role == "admin":
                 st.plotly_chart(fig, use_container_width=True)
                 
             with col_chart2:
-                st.subheader("📅 الإقبال حسب أيام الأسبوع")
-                weekday_stats = behavior_df.groupby('day_name').agg({'total_customers': 'sum'}).reset_index()
+                st.subheader("📅 الإيرادات حسب أيام الأسبوع")
+                weekday_stats = behavior_df.groupby('day_name').agg({
+                    'total_revenue': 'sum',
+                    'total_customers': 'sum'
+                }).reset_index()
                 day_order = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"]
                 weekday_stats['day_name'] = pd.Categorical(weekday_stats['day_name'], categories=day_order, ordered=True)
                 weekday_stats = weekday_stats.sort_values('day_name')
                 
-                fig_week = px.bar(weekday_stats, x='day_name', y='total_customers', 
-                                  labels={'day_name': 'اليوم', 'total_customers': 'عدد الزبائن'},
-                                  color='total_customers', color_continuous_scale='Blues')
+                fig_week = px.bar(
+                    weekday_stats, 
+                    x='day_name', 
+                    y='total_revenue',
+                    custom_data=['total_customers'],
+                    labels={'day_name': 'اليوم', 'total_revenue': 'الإيراد (ج.م)'},
+                    color='total_revenue', 
+                    color_continuous_scale='Greens'
+                )
+                fig_week.update_traces(
+                    hovertemplate="<b>%{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد الزبائن: %{customdata[0]:,}<extra></extra>"
+                )
                 st.plotly_chart(fig_week, use_container_width=True)
             
-            st.subheader("🔥 ساعات الذروة الإجمالية في هذه الفترة")
-            hourly = tx_subset.groupby('hour')['id'].count().reset_index().rename(columns={'id': 'الزيارات'})
+            st.subheader("🔥 ساعات الذروة المالية (الإيراد والزيارات)")
+            hourly = tx_subset.groupby('hour').agg(
+                total_revenue=('amount_paid', 'sum'),
+                total_customers=('id', 'count')
+            ).reset_index()
             hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x}:00")
-            fig_hour = px.bar(hourly, x='hour_str', y='الزيارات', color='الزيارات',
-                              labels={'hour_str': 'الساعة'}, color_continuous_scale='Sunset')
+            
+            fig_hour = px.bar(
+                hourly, 
+                x='hour_str', 
+                y='total_revenue', 
+                color='total_revenue',
+                custom_data=['total_customers'],
+                labels={'hour_str': 'الساعة', 'total_revenue': 'إجمالي الإيراد (ج.م)'}, 
+                color_continuous_scale='Sunset'
+            )
+            fig_hour.update_traces(
+                hovertemplate="<b>الساعة: %{x}</b><br>إجمالي الإيراد: %{y:,.0f} ج.م<br>عدد الزبائن: %{customdata[0]:,}<extra></extra>"
+            )
             st.plotly_chart(fig_hour, use_container_width=True)
 
     # --- AUDIT LOGS SECTION FOR ADMIN ---
@@ -1124,3 +1150,4 @@ elif role == "admin":
     if not all_backup_exp.empty:
         csv_exp = all_backup_exp.to_csv(index=False).encode('utf-8-sig')
         col_b4.download_button("📥 تحميل كل المصروفات", data=csv_exp, file_name=f"all_expenses_{today_date_str}.csv", mime="text/csv", use_container_width=True)
+
