@@ -1,7 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import random
 from datetime import datetime, date, timezone, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
@@ -209,10 +207,9 @@ def record_waste(branch: str, quantity: int = 1, notes: str = "ورقة تالف
             "branch": branch
         })
 
-def record_transaction(branch: str, prints_count: int, amount_paid: float, custom_date: str = None, affect_inventory: bool = True):
+def record_transaction(branch: str, prints_count: int, amount_paid: float):
     now_str = get_egypt_now_str()
-    today_str = custom_date if custom_date else get_egypt_today_str()
-    tx_timestamp = f"{today_str} 21:00:00" if custom_date else now_str
+    today_str = get_egypt_today_str()
     
     with engine.begin() as conn:
         row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": today_str}).fetchone()
@@ -232,22 +229,20 @@ def record_transaction(branch: str, prints_count: int, amount_paid: float, custo
             VALUES (:day_id, :ts, :prints, :amount, :branch)
         '''), {
             "day_id": day_id,
-            "ts": tx_timestamp,
+            "ts": now_str,
             "prints": prints_count,
             "amount": amount_paid,
             "branch": branch
         })
         
-        if affect_inventory:
-            conn.execute(text('''
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'consumption', :qty, :notes, :branch)
-            '''), {
-                "ts": tx_timestamp,
-                "qty": -prints_count,
-                "notes": f"استهلاك معاملة {today_str}",
-                "branch": branch
-            })
+        conn.execute(text('''
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'consumption', :qty, 'Transaction consumption', :branch)
+        '''), {
+            "ts": now_str,
+            "qty": -prints_count,
+            "branch": branch
+        })
 
 def delete_transaction(tx_id: int, branch: str):
     now_str = get_egypt_now_str()
@@ -314,16 +309,15 @@ def update_transaction(tx_id: int, branch: str, new_prints: int, new_amount: flo
     return False
 
 # ----------------- EXPENSES HELPER FUNCTIONS -----------------
-def record_expense(branch: str, amount: float, description: str, created_by: str, custom_date: str = None):
+def record_expense(branch: str, amount: float, description: str, created_by: str):
     now_str = get_egypt_now_str()
-    today_str = custom_date if custom_date else get_egypt_today_str()
-    tx_timestamp = f"{today_str} 21:00:00" if custom_date else now_str
+    today_str = get_egypt_today_str()
     with engine.begin() as conn:
         conn.execute(text('''
             INSERT INTO expenses (timestamp, date, branch, amount, description, created_by)
             VALUES (:ts, :date, :branch, :amount, :desc, :user)
         '''), {
-            "ts": tx_timestamp,
+            "ts": now_str,
             "date": today_str,
             "branch": branch,
             "amount": amount,
@@ -384,43 +378,6 @@ def update_expense(exp_id: int, new_amount: float, new_desc: str, branch: str = 
             })
             return True
     return False
-
-# ----------------- REBALANCE 21:00 SPIKE FUNCTION -----------------
-def rebalance_bulk_hours():
-    with engine.begin() as conn:
-        real_tx = pd.read_sql_query(
-            text("SELECT timestamp FROM transactions WHERE timestamp NOT LIKE '%21:00:00%'"),
-            conn
-        )
-        if not real_tx.empty:
-            real_tx['hour'] = pd.to_datetime(real_tx['timestamp']).dt.hour
-            hour_counts = real_tx['hour'].value_counts(normalize=True)
-            hours = hour_counts.index.values
-            probabilities = hour_counts.values
-        else:
-            hours = [17, 18, 19, 20, 21, 22, 23, 0, 1, 2, 3]
-            probabilities = [0.04, 0.06, 0.08, 0.12, 0.15, 0.18, 0.17, 0.10, 0.06, 0.03, 0.01]
-
-        bulk_tx = pd.read_sql_query(
-            text("SELECT id, timestamp FROM transactions WHERE timestamp LIKE '%21:00:00%'"),
-            conn
-        )
-        
-        count = 0
-        for _, row in bulk_tx.iterrows():
-            tx_id = row['id']
-            date_part = row['timestamp'].split(' ')[0]
-            sampled_hour = int(np.random.choice(hours, p=probabilities))
-            sampled_minute = random.randint(0, 59)
-            sampled_second = random.randint(0, 59)
-            new_ts = f"{date_part} {sampled_hour:02d}:{sampled_minute:02d}:{sampled_second:02d}"
-            
-            conn.execute(
-                text("UPDATE transactions SET timestamp = :new_ts WHERE id = :id"),
-                {"new_ts": new_ts, "id": tx_id}
-            )
-            count += 1
-    return count
 
 # ----------------- AUTHENTICATION -----------------
 if 'logged_in' not in st.session_state:
@@ -781,6 +738,7 @@ elif role == "admin":
             if not filtered_exp.empty:
                 direct_exp = filtered_exp[filtered_exp['branch'] == selected_branch]['amount'].sum()
                 general_exp = filtered_exp[filtered_exp['branch'] == 'General']['amount'].sum()
+                # تحميل الفرع بنصف المصاريف العامة
                 total_exp_all = direct_exp + (general_exp / 2.0)
             else:
                 total_exp_all = 0.0
@@ -812,16 +770,6 @@ elif role == "admin":
 
         st.metric("📦 المخزون المتبقي حالياً", stock_display)
         
-        st.markdown("---")
-
-        # ----------------- REBALANCE 21:00 FIX BUTTON (سحر التوزيع) -----------------
-        with st.expander("⚡ معالجة وإعادة توزيع ساعات البيانات القديمة (Spike Fix)", expanded=False):
-            st.info("هذا الزر يقوم بفحص العمليات التي تم إدخالها عند الساعة 21:00:00 وتوزيع ساعاتها ودقائقها واقعياً وفق النسب الفعلية للزبائن في باقي الأيام دون المساس بالتاريخ أو المبالغ.")
-            if st.button("🔄 ضبط وتوزيع ساعات العمليات القديمة عشوائياً وفق التوزيع الفعلي", type="primary", use_container_width=True):
-                rebalanced_rows = rebalance_bulk_hours()
-                st.success(f"✅ تم بنجاح معالجة وإعادة توزيع {rebalanced_rows} عملية بتوقيتات واقعية!")
-                st.rerun()
-
         st.markdown("---")
 
         # ----------------- ADMIN EXPENSES ENTRY -----------------
@@ -1135,4 +1083,4 @@ elif role == "admin":
             file_name=f"all_expenses_{today_date_str}.csv",
             mime="text/csv",
             use_container_width=True
-        )
+                )
