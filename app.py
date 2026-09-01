@@ -762,8 +762,10 @@ elif role == "admin":
         # Top Financial KPIs
         kpi1, kpi2, kpi3 = st.columns(3)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
-        kpi2.metric("💸 إجمالي المصروفات", f"{total_exp_all:,.0f} ج.م", delta=f"-{total_exp_all:,.0f}", delta_color="inverse")
-        kpi3.metric("📈 صافي الربح", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}")
+        # الجديد:
+        kpi2.metric("💸 إجمالي المصروفات", f"{total_exp_all:,.0f} ج.م", delta=f"-{total_exp_all:,.0f}", delta_color="normal")
+        kpi3.metric("📈 صافي الربح", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
+
 
         kpi4, kpi5, kpi6 = st.columns(3)
         kpi4.metric("👥 إجمالي الزبائن", f"{total_cust_all:,}")
