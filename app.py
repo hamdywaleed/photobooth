@@ -988,16 +988,16 @@ elif role == "admin":
             with st.form("new_event_form", clear_on_submit=True):
                 ef1, ef2, ef3 = st.columns(3)
                 with ef1:
-                    ev_client = st.text_input("اسم العميل / المناسبة:", placeholder="مثال: فرح أحمد ومنى")
-                    ev_loc = st.text_input("مكان الإيفنت / القاعة:", placeholder="مثال: قاعة رويال - التجمع")
+                    ev_client = st.text_input("اسم العميل / المناسبة:", placeholder="")
+                    ev_loc = st.text_input("مكان الإيفنت / القاعة:", placeholder="")
                     ev_dev = st.selectbox("الجهاز المخصص:", ["Heaven", "9A"])
                 with ef2:
                     ev_date = st.date_input("تاريخ الإيفنت:", value=date.today())
                     ev_hours = st.number_input("عدد الساعات:", min_value=1, max_value=24, value=3, step=1)
                     ev_start = st.time_input("ساعة البداية:", value=time(19, 0))
                 with ef3:
-                    ev_total = st.number_input("إجمالي قيمة الحجز (ج.م):", min_value=100.0, value=3000.0, step=250.0)
-                    ev_deposit = st.number_input("العربون المدفوع (ج.م):", min_value=0.0, value=1000.0, step=250.0)
+                    ev_total = st.number_input("إجمالي قيمة الحجز (ج.م):", min_value=100.0, value=2000.0, step=500.0)
+                    ev_deposit = st.number_input("العربون المدفوع (ج.م):", min_value=0.0, value=1000.0, step=500.0)
                     ev_notes = st.text_input("ملاحظات إضافية:", placeholder="خلفية خاصة، برواز مخصص...")
                 
                 start_dt = datetime.combine(ev_date, ev_start)
@@ -1088,12 +1088,12 @@ elif role == "admin":
                         with st.form(f"settle_form_{ev['id']}"):
                             c_p, c_t, c_w = st.columns(3)
                             with c_p:
-                                in_prints = st.number_input("عدد الورق المستهلك في الإيفنت:", min_value=0, max_value=2000, value=100, step=10, key=f"p_{ev['id']}")
+                                in_prints = st.number_input("عدد الورق المستهلك في الإيفنت:", min_value=0, max_value=2000, value=50, step=10, key=f"p_{ev['id']}")
                                 st.caption(f"تكلفة الورق المحسوبة (×3 ج): **{in_prints * 3:,.0f} ج.م**")
                             with c_t:
-                                in_trans = st.number_input("مصاريف المواصلات / النقل (ج.م):", min_value=0.0, value=200.0, step=50.0, key=f"t_{ev['id']}")
+                                in_trans = st.number_input("مصاريف المواصلات / النقل (ج.م):", min_value=0.0, value=100.0, step=50.0, key=f"t_{ev['id']}")
                             with c_w:
-                                in_worker = st.number_input("فلوس الموظف المسؤول (ج.م):", min_value=0.0, value=300.0, step=50.0, key=f"w_{ev['id']}")
+                                in_worker = st.number_input("فلوس الموظف المسؤول (ج.م):", min_value=0.0, value=100.0, step=10.0, key=f"w_{ev['id']}")
                             
                             sub_settle = st.form_submit_button("✅ اعتماد تنفيذ الإيفنت وحساب صافي الربح وتوريد المبلغ", use_container_width=True)
                             if sub_settle:
