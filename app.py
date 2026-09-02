@@ -24,6 +24,11 @@ ARABIC_DAYS = {
     "Thursday": "الخميس", "Friday": "الجمعة", "Saturday": "السبت", "Sunday": "الأحد"
 }
 
+def format_arabic_time(t_str):
+    if not t_str:
+        return ""
+    return str(t_str).replace("AM", "ص").replace("PM", "م").replace("am", "ص").replace("pm", "م")
+
 # ----------------- APP CONFIG -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
 
@@ -39,24 +44,79 @@ st.markdown("""
         background-color: #1a1d24;
         border: 1px solid #2d323f;
         border-radius: 12px;
-        padding: 18px;
-        margin-bottom: 15px;
+        padding: 20px;
+        margin-bottom: 16px;
+        direction: rtl;
+        text-align: right;
+        font-family: inherit;
+    }
+    .event-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid #2d323f;
+        padding-bottom: 12px;
+        margin-bottom: 12px;
+    }
+    .event-title {
+        font-size: 20px;
+        font-weight: bold;
+        color: #ffffff;
     }
     .badge-heaven {
         background-color: #00CC96;
         color: white;
-        padding: 3px 8px;
-        border-radius: 5px;
+        padding: 4px 10px;
+        border-radius: 6px;
         font-weight: bold;
         font-size: 13px;
     }
     .badge-9a {
         background-color: #636EFA;
         color: white;
-        padding: 3px 8px;
-        border-radius: 5px;
+        padding: 4px 10px;
+        border-radius: 6px;
         font-weight: bold;
         font-size: 13px;
+    }
+    .event-meta {
+        font-size: 15px;
+        color: #b0b4be;
+        margin-bottom: 12px;
+        line-height: 1.6;
+    }
+    .event-finance-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px;
+        background-color: #13151b;
+        padding: 12px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+    }
+    .finance-item {
+        display: flex;
+        flex-direction: column;
+    }
+    .finance-label {
+        font-size: 13px;
+        color: #8a8f9d;
+        margin-bottom: 4px;
+    }
+    .finance-val {
+        font-size: 16px;
+        font-weight: bold;
+        color: #ffffff;
+    }
+    .finance-val-green {
+        font-size: 16px;
+        font-weight: bold;
+        color: #00CC96;
+    }
+    .finance-val-red {
+        font-size: 16px;
+        font-weight: bold;
+        color: #ff4b4b;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -880,6 +940,11 @@ elif role == "admin":
         all_exp_raw = pd.read_sql_query(text("SELECT * FROM expenses ORDER BY timestamp ASC"), conn)
         all_events_raw = pd.read_sql_query(text("SELECT * FROM events ORDER BY event_date ASC, start_time ASC"), conn)
 
+    # تأمين الأعمدة في all_events_raw لتجنب أي خطأ
+    for col_name in ['total_amount', 'total_expenses', 'net_profit', 'remaining_amount', 'deposit_paid']:
+        if col_name not in all_events_raw.columns:
+            all_events_raw[col_name] = 0.0
+
     if not all_tx_raw.empty:
         min_date = pd.to_datetime(all_tx_raw['date']).dt.date.min()
         max_date = pd.to_datetime(all_tx_raw['date']).dt.date.max()
@@ -901,11 +966,10 @@ elif role == "admin":
         st.button("🚪 خروج", on_click=logout, use_container_width=True)
     st.markdown("---")
 
-    # ================= 2.A قسم حجوزات الإيفنتات (مستقل ومفصل بالكامل) =================
+    # ================= 2.A قسم حجوزات الإيفنتات =================
     if sec_choice == "🎪 حجوزات الإيفنتات":
         st.title("🎪 إدارة حجوزات الإيفنتات الخارجية")
         
-        # كروت الأرقام العلوية الخاصة بالإيفنتات
         total_ev_count = len(all_events_raw)
         total_ev_rev = all_events_raw['total_amount'].sum() if not all_events_raw.empty else 0
         total_ev_exp = all_events_raw['total_expenses'].sum() if not all_events_raw.empty else 0
@@ -938,8 +1002,8 @@ elif role == "admin":
                 
                 start_dt = datetime.combine(ev_date, ev_start)
                 end_dt = start_dt + timedelta(hours=int(ev_hours))
-                ev_end_str = end_dt.strftime("%I:%M %p")
-                ev_start_str = start_dt.strftime("%I:%M %p")
+                ev_start_str = format_arabic_time(start_dt.strftime("%I:%M %p"))
+                ev_end_str = format_arabic_time(end_dt.strftime("%I:%M %p"))
                 
                 st.caption(f"🕒 التوقيت: من {ev_start_str} إلى {ev_end_str} | ⏳ المتبقي: {ev_total - ev_deposit:,.0f} ج.م")
                 
@@ -962,36 +1026,62 @@ elif role == "admin":
             for _, ev in all_events_raw.iterrows():
                 badge_class = "badge-heaven" if ev['device'] == "Heaven" else "badge-9a"
                 is_settled = ev['status'] == 'تم التنفيذ والتسوية'
+                start_t_ar = format_arabic_time(ev['start_time'])
+                end_t_ar = format_arabic_time(ev['end_time'])
+                
+                rem_val = float(ev.get('remaining_amount', 0))
+                rem_text = f"{rem_val:,.0f} ج.م" if rem_val > 0 else "تم السداد بالكامل"
+                rem_class = "finance-val-red" if rem_val > 0 else "finance-val-green"
                 
                 st.markdown(f"""
                 <div class="event-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-size: 20px; font-weight: bold;">🎉 {ev['client_name']} &nbsp;|&nbsp; 📍 {ev['location']}</span>
-                        <span class="{badge_class}">جهاز: {ev['device']}</span>
+                    <div class="event-top">
+                        <div class="event-title">🎉 {ev['client_name']} &nbsp;•&nbsp; 📍 {ev['location']}</div>
+                        <div class="{badge_class}">جهاز: {ev['device']}</div>
                     </div>
-                    <div style="margin: 8px 0; color: #b0b4be;">
-                        📅 <b>التاريخ:</b> {ev['event_date']} &nbsp;|&nbsp; 🕒 <b>التوقيت:</b> من {ev['start_time']} إلى {ev['end_time']} ({ev['hours']} ساعات)
+                    <div class="event-meta">
+                        📅 <b>تاريخ الإيفنت:</b> {ev['event_date']} &nbsp;&nbsp;|&nbsp;&nbsp; 
+                        ⏰ <b>التوقيت:</b> من {start_t_ar} إلى {end_t_ar} ({ev['hours']} ساعات)
                     </div>
-                    <div style="margin: 8px 0; font-size: 16px;">
-                        💰 <b>قيمة الحجز:</b> {ev['total_amount']:,.0f} ج.م &nbsp;|&nbsp; 
-                        💸 <b>إجمالي المصروفات:</b> {ev['total_expenses']:,.0f} ج.م &nbsp;|&nbsp; 
-                        📈 <b>صافي الربح:</b> <span style="color: #00CC96; font-weight: bold;">{ev['net_profit']:,.0f} ج.م</span>
-                    </div>
-                    <div style="font-size: 14px; color: #8a8f9d;">
-                        حالة الحجز: <b>{ev['status']}</b> &nbsp;|&nbsp; 
-                        المدفوع: {ev['deposit_paid']:,.0f} ج.م &nbsp;|&nbsp; 
-                        {'<span style="color:#ff4b4b; font-weight:bold;">المتبقي: ' + str(int(ev['remaining_amount'])) + ' ج.م</span>' if ev['remaining_amount'] > 0 else '<span style="color:#00CC96;">تم تحصيل المبلغ بالكامل</span>'}
+                    <div class="event-finance-grid">
+                        <div class="finance-item">
+                            <div class="finance-label">قيمة الحجز</div>
+                            <div class="finance-val">{ev.get('total_amount', 0):,.0f} ج.م</div>
+                        </div>
+                        <div class="finance-item">
+                            <div class="finance-label">المدفوع</div>
+                            <div class="finance-val">{ev.get('deposit_paid', 0):,.0f} ج.م</div>
+                        </div>
+                        <div class="finance-item">
+                            <div class="finance-label">المتبقي</div>
+                            <div class="{rem_class}">{rem_text}</div>
+                        </div>
+                        <div class="finance-item">
+                            <div class="finance-label">إجمالي المصروفات</div>
+                            <div class="finance-val">{ev.get('total_expenses', 0):,.0f} ج.م</div>
+                        </div>
+                        <div class="finance-item">
+                            <div class="finance-label">صافي الربح</div>
+                            <div class="finance-val-green">{ev.get('net_profit', 0):,.0f} ج.م</div>
+                        </div>
+                        <div class="finance-item">
+                            <div class="finance-label">حالة الحجز</div>
+                            <div class="finance-val" style="font-size:14px;">{ev.get('status', '-')}</div>
+                        </div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
 
+                if ev.get("notes"):
+                    st.caption(f"📝 ملاحظات: {ev['notes']}")
+
                 with st.expander(f"🔍 تفاصيل المصروفات والتسوية لإيفنت #{ev['id']} ({ev['client_name']})", expanded=False):
                     if is_settled:
                         sc1, sc2, sc3, sc4 = st.columns(4)
-                        sc1.info(f"🖨️ الورق: {ev['prints_used']} ورقة ({ev['paper_cost']:,.0f} ج)")
-                        sc2.info(f"🚗 مواصلات: {ev['transport_cost']:,.0f} ج")
-                        sc3.info(f"👨‍💼 أجر الموظف: {ev['worker_cost']:,.0f} ج")
-                        sc4.success(f"📈 صافي الربح: {ev['net_profit']:,.0f} ج.م")
+                        sc1.info(f"🖨️ الورق: {ev.get('prints_used', 0)} ورقة ({ev.get('paper_cost', 0):,.0f} ج)")
+                        sc2.info(f"🚗 مواصلات: {ev.get('transport_cost', 0):,.0f} ج")
+                        sc3.info(f"👨‍💼 أجر الموظف: {ev.get('worker_cost', 0):,.0f} ج")
+                        sc4.success(f"📈 صافي الربح: {ev.get('net_profit', 0):,.0f} ج.م")
                     else:
                         st.markdown("##### 📝 إتمام وتسوية مصاريف الإيفنت بعد التنفيذ")
                         st.caption("أدخل بيانات المصروفات الفعلية لحساب تكلفة الورق (الورقة بـ 3 ج) والمواصلات والموظف وتوريد الباقي:")
@@ -1016,7 +1106,6 @@ elif role == "admin":
                         st.warning("تم حذف الإيفنت.")
                         st.rerun()
 
-            # تصدير بيانات الإيفنتات فقط كملف إكسيل
             st.markdown("---")
             st.subheader("📥 تصدير سجل الإيفنتات بالكامل")
             events_export = all_events_raw.rename(columns={
@@ -1229,7 +1318,7 @@ elif role == "admin":
                 
                 def extract_time(ts):
                     if pd.isna(ts): return "-"
-                    return pd.to_datetime(ts).strftime('%I:%M %p')
+                    return format_arabic_time(pd.to_datetime(ts).strftime('%I:%M %p'))
                 
                 behavior_df['first_time'] = behavior_df['first_customer_time'].apply(extract_time)
                 behavior_df['last_time'] = behavior_df['last_customer_time'].apply(extract_time)
