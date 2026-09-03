@@ -136,9 +136,10 @@ except Exception:
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
 def init_db():
+    pk_def = "id SERIAL PRIMARY KEY" if IS_POSTGRES else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    
+    # 1. إنشاء الجداول الأساسية
     with engine.begin() as conn:
-        pk_def = "id SERIAL PRIMARY KEY" if IS_POSTGRES else "id INTEGER PRIMARY KEY AUTOINCREMENT"
-            
         conn.execute(text(f'''
             CREATE TABLE IF NOT EXISTS days (
                 {pk_def},
@@ -225,46 +226,56 @@ def init_db():
             )
         '''))
 
-        # Safe Auto-Migration for Old DBs:
+    # 2. ترقية الأعمدة القديمة (كل خطوة في Transaction منفصلة لضمان عدم حدوث Abort)
+    alter_queries = [
+        "ALTER TABLE expenses ADD COLUMN day_id INTEGER",
+        "ALTER TABLE audit_logs ADD COLUMN entity_type TEXT DEFAULT 'transaction'",
+        "ALTER TABLE audit_logs ADD COLUMN entity_id INTEGER",
+        "UPDATE audit_logs SET entity_id = transaction_id WHERE entity_id IS NULL AND transaction_id IS NOT NULL"
+    ]
+    
+    for q in alter_queries:
         try:
-            conn.execute(text("ALTER TABLE expenses ADD COLUMN day_id INTEGER"))
+            with engine.begin() as conn:
+                conn.execute(text(q))
         except Exception:
-            pass
+            pass  # لو العمود موجود بالفعل هيتجاهله ويكمل عادي جداً
 
-        try:
-            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN entity_type TEXT DEFAULT 'transaction'"))
-        except Exception:
-            pass
-
-        try:
-            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN entity_id INTEGER"))
-            conn.execute(text("UPDATE audit_logs SET entity_id = transaction_id WHERE entity_id IS NULL"))
-        except Exception:
-            pass
-
-        # Link any old detached expenses with the days table safely
-        conn.execute(text('''
-            INSERT INTO days (date)
-            SELECT DISTINCT e.date 
-            FROM expenses e 
-            WHERE e.date NOT IN (SELECT date FROM days)
-        '''))
-        
-        if IS_POSTGRES:
-            conn.execute(text('''
-                UPDATE expenses e
-                SET day_id = d.id
-                FROM days d
-                WHERE e.date = d.date AND e.day_id IS NULL
-            '''))
-        else:
-            conn.execute(text('''
-                UPDATE expenses
-                SET day_id = (SELECT id FROM days WHERE days.date = expenses.date)
-                WHERE day_id IS NULL
-            '''))
+    # 3. مزامنة التواريخ وربط المصاريف القديمة بـ days بأمان
+    try:
+        with engine.begin() as conn:
+            # إضافة التواريخ الناقصة مع تفادي القيم الفارغة وتكرار الـ Unique
+            if IS_POSTGRES:
+                conn.execute(text('''
+                    INSERT INTO days (date)
+                    SELECT DISTINCT e.date 
+                    FROM expenses e 
+                    WHERE e.date IS NOT NULL AND e.date != ''
+                    ON CONFLICT (date) DO NOTHING
+                '''))
+                conn.execute(text('''
+                    UPDATE expenses e
+                    SET day_id = d.id
+                    FROM days d
+                    WHERE e.date = d.date AND e.day_id IS NULL
+                '''))
+            else:
+                conn.execute(text('''
+                    INSERT OR IGNORE INTO days (date)
+                    SELECT DISTINCT e.date 
+                    FROM expenses e 
+                    WHERE e.date IS NOT NULL AND e.date != ''
+                '''))
+                conn.execute(text('''
+                    UPDATE expenses
+                    SET day_id = (SELECT id FROM days WHERE days.date = expenses.date)
+                    WHERE day_id IS NULL
+                '''))
+    except Exception as e:
+        print(f"Warning during sync: {e}")
 
 init_db()
+
 
 # ----------------- GENERAL HELPERS -----------------
 def get_or_create_day_id(date_str: str) -> int:
