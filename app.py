@@ -36,7 +36,6 @@ st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap');
     
-    /* تطبيق الخط العربي على النصوص دون كسر خط الأيقونات الخاص بـ Streamlit */
     p, h1, h2, h3, h4, h5, h6, label, .stMetric, .stDataFrame, .stSelectbox, .stTextInput, .stNumberInput {
         font-family: 'Cairo', sans-serif !important;
     }
@@ -52,7 +51,6 @@ st.markdown("""
         text-align: right;
     }
 
-    /* حماية الأيقونات وأسهم الـ Expander من التحول لكلمات إنجليزية مشوهة */
     [data-testid="stExpanderToggleIcon"], .material-icons, [class*="material-symbols"] {
         font-family: 'Material Icons', 'Material Symbols Outlined' !important;
         direction: ltr !important;
@@ -223,7 +221,7 @@ def init_db():
                 rent REAL DEFAULT 0.0,
                 salary REAL DEFAULT 0.0,
                 bills REAL DEFAULT 0.0,
-                cost_per_print REAL DEFAULT 3.0,
+                cost_per_print REAL DEFAULT 1.1,
                 updated_at TEXT
             )
         """))
@@ -275,7 +273,7 @@ def init_db():
                 VALUES (:ts, 'restock_ink', 3, 'رصيد حبر افتتاحي (علبة ونصف = 3 مليات)', 'Warehouse_Ink')
             """), {"ts": get_egypt_now_str()})
 
-        # تسوية المعاملات السابقة كمحصلة مع عزل مبيعات السبت 5-9 المعلقة فقط (1,670 ج)
+        # تسوية المعاملات التاريخية كمحصلة ما عدا مبيعات السبت 5-9 المعلقة (340 ج فرع 9A و 1330 ج فرع Heaven)
         conn.execute(text("UPDATE transactions SET is_collected = 1"))
         conn.execute(text("""
             UPDATE transactions 
@@ -287,12 +285,12 @@ def init_db():
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO branch_settings (branch, rent, salary, bills, cost_per_print, updated_at)
-            VALUES ('9A', 3000, 4000, 650, 3.0, :ts)
+            VALUES ('9A', 3000, 4000, 650, 1.1, :ts)
             ON CONFLICT (branch) DO NOTHING
         """), {"ts": get_egypt_now_str()})
         conn.execute(text("""
             INSERT INTO branch_settings (branch, rent, salary, bills, cost_per_print, updated_at)
-            VALUES ('Heaven', 2500, 2500, 0, 3.0, :ts)
+            VALUES ('Heaven', 2500, 2500, 0, 1.1, :ts)
             ON CONFLICT (branch) DO NOTHING
         """), {"ts": get_egypt_now_str()})
 
@@ -317,7 +315,7 @@ def get_branch_settings(branch_name: str):
         row = conn.execute(text("SELECT * FROM branch_settings WHERE branch = :b"), {"b": branch_name}).mappings().fetchone()
         if row:
             return dict(row)
-        return {"rent": 0.0, "salary": 0.0, "bills": 0.0, "cost_per_print": 3.0}
+        return {"rent": 0.0, "salary": 0.0, "bills": 0.0, "cost_per_print": 1.1}
 
 def update_branch_settings(branch_name: str, rent: float, salary: float, bills: float, cost_per_print: float):
     now_str = get_egypt_now_str()
@@ -436,6 +434,15 @@ def transfer_ink_to_branch(to_branch: str, refills_count: int, notes: str = ""):
             VALUES (:ts, 'transfer_in_ink', :qty, :notes, :branch)
         """), {"ts": now_str, "qty": refills_count, "notes": f"استلام {refills_count} ملوة حبر من المخزن | {notes}", "branch": to_branch})
 
+def manual_adjust_branch_stock(branch_name: str, sheets_count: int, action: str = "خصم", notes: str = ""):
+    now_str = get_egypt_now_str()
+    qty = -sheets_count if action == "خصم" else sheets_count
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'manual_adjust', :qty, :notes, :b)
+        """), {"ts": now_str, "qty": qty, "notes": f"تسوية يدوية ({action} {sheets_count} ورقة) | {notes}", "b": branch_name})
+
 def record_waste(branch_name: str, quantity: int = 1, notes: str = "ورقة تالفة"):
     with engine.begin() as conn:
         conn.execute(text("""
@@ -508,12 +515,15 @@ def update_transaction(tx_id: int, branch_name: str, new_prints: int, new_amount
             return True
     return False
 
-def mark_transactions_collected(branch_name: str = None):
+def mark_day_collected(day_date: str, branch_name: str):
     with engine.begin() as conn:
-        if branch_name and branch_name != "الكل":
-            conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE branch = :b AND is_collected = 0"), {"b": branch_name})
-        else:
-            conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE is_collected = 0"))
+        conn.execute(text("""
+            UPDATE transactions
+            SET is_collected = 1
+            WHERE day_id = (SELECT id FROM days WHERE date = :d)
+              AND branch = :b
+              AND is_collected = 0
+        """), {"d": day_date, "b": branch_name})
 
 def record_cash_drawing(amount: float, receiver: str, notes: str):
     now_str = get_egypt_now_str()
@@ -593,7 +603,9 @@ def create_event(event_date: str, client_name: str, location: str, device: str, 
 
 def complete_event_settlement(event_id: int, from_branch: str, prints_count: int, transport_cost: float, worker_cost: float):
     now_str = get_egypt_now_str()
-    paper_cost = prints_count * 3.0
+    cfg = get_branch_settings(from_branch if from_branch != "Warehouse" else "9A")
+    cost_per_p = float(cfg.get("cost_per_print", 1.1))
+    paper_cost = prints_count * cost_per_p
     total_exp = paper_cost + transport_cost + worker_cost
     with engine.begin() as conn:
         ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
@@ -604,14 +616,12 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
             profit = total_rev - total_exp
             d_id = get_or_create_day_id(event_date)
             
-            # 1. توريد المبلغ المتبقي كإيراد
             if rem > 0:
                 conn.execute(text("""
                     INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
                     VALUES (:day_id, :ts, :prints, :amount, 'Events', 1)
                 """), {"day_id": d_id, "ts": now_str, "prints": prints_count, "amount": rem})
             
-            # 2. خصم الورق الفعلي من رصيد الفرع المحدد في المخزون
             if prints_count > 0 and from_branch:
                 conn.execute(text("""
                     INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
@@ -623,15 +633,13 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
                     "branch": from_branch
                 })
 
-            # 3. تسجيل مصروفات الإيفنت
             if total_exp > 0:
-                desc = f"مصروف إيفنت #{event_id} ({ev['client_name']}): ورق={paper_cost}ج من {from_branch}، مواصلات={transport_cost}ج، موظف={worker_cost}ج"
+                desc = f"مصروف إيفنت #{event_id} ({ev['client_name']}): ورق={paper_cost:,.0f}ج من {from_branch}، مواصلات={transport_cost:,.0f}ج، موظف={worker_cost:,.0f}ج"
                 conn.execute(text("""
                     INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category)
                     VALUES (:day_id, :ts, :date, 'Events', :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات')
                 """), {"day_id": d_id, "ts": now_str, "date": event_date, "amount": total_exp, "desc": desc})
 
-            # 4. تحديث حالة الإيفنت
             conn.execute(text("""
                 UPDATE events
                 SET deposit_paid = total_amount, remaining_amount = 0, status = 'تم التنفيذ والتسوية',
@@ -641,8 +649,25 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
             """), {"prints": prints_count, "p_cost": paper_cost, "t_cost": transport_cost, "w_cost": worker_cost, "tot_exp": total_exp, "profit": profit, "id": event_id})
 
 def delete_event(event_id: int):
+    now_str = get_egypt_now_str()
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM events WHERE id = :id"), {"id": event_id})
+        ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
+        if ev:
+            if ev.get("prints_used", 0) > 0 and ev.get("device"):
+                conn.execute(text("""
+                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                    VALUES (:ts, 'restock', :qty, :notes, :b)
+                """), {"ts": now_str, "qty": ev["prints_used"], "notes": f"استرجاع ورق لحذف إيفنت #{event_id}", "b": ev["device"]})
+            conn.execute(text("DELETE FROM expenses WHERE description LIKE :pattern"), {"pattern": f"%إيفنت #{event_id}%"})
+            conn.execute(text("""
+                DELETE FROM transactions 
+                WHERE branch = 'Events' 
+                  AND day_id = (SELECT id FROM days WHERE date = :d) 
+                  AND amount_paid IN (:dep, :tot, :rem)
+            """), {"d": ev["event_date"], "dep": ev["deposit_paid"], "tot": ev["total_amount"], "rem": ev["remaining_amount"]})
+            conn.execute(text("DELETE FROM events WHERE id = :id"), {"id": event_id})
+            return True
+    return False
 
 # ----------------- AUTHENTICATION -----------------
 if 'logged_in' not in st.session_state:
@@ -692,7 +717,7 @@ role = st.session_state.role
 branch = st.session_state.branch
 
 # ==============================================================
-# 1. EMPLOYEE SCREEN (واجهة الموظف)
+# 1. EMPLOYEE SCREEN
 # ==============================================================
 if role == "employee":
     current_stock = get_current_stock(branch)
@@ -1020,10 +1045,10 @@ elif role == "admin":
 
         with col_in2:
             st.markdown("### 🚚 تحويل ورق وحبر إلى الفروع")
-            with st.expander("📄 تحويل ورق للفرع", expanded=True):
+            with st.expander("📄 تحويل ورق للفرع (بالورقة)", expanded=True):
                 with st.form("transfer_stock_form", clear_on_submit=True):
                     target_b = st.selectbox("اختر الفرع المحول إليه:", ["9A", "Heaven"], key="t_b_paper")
-                    trans_sheets = st.number_input("عدد الورق المحول (ورقة):", min_value=50, max_value=max(int(warehouse_sheets), 50), value=200, step=50)
+                    trans_sheets = st.number_input("عدد الورق المحول (ورقة):", min_value=1, max_value=max(int(warehouse_sheets), 1), value=100, step=50)
                     trans_notes = st.text_input("ملاحظات التحويل:", placeholder="تسليم شيفت المساء...")
                     if st.form_submit_button("🚚 تحويل الورق فوراً للفرع", use_container_width=True):
                         if warehouse_sheets >= trans_sheets:
@@ -1045,6 +1070,17 @@ elif role == "admin":
                             st.rerun()
                         else:
                             st.error("رصيد الحبر بالمخزن العام لا يكفي!")
+
+            with st.expander("✂️ سحب / تعديل رصيد ورق من فرع مباشرة (بالورقة)"):
+                with st.form("manual_adjust_stock_form", clear_on_submit=True):
+                    adj_b = st.selectbox("اختر الفرع:", ["9A", "Heaven"], key="adj_b")
+                    adj_type = st.radio("نوع التعديل:", ["خصم", "إضافة"], horizontal=True)
+                    adj_qty = st.number_input("عدد الورق (بالورقة):", min_value=1, max_value=2000, value=10, step=5)
+                    adj_notes = st.text_input("سبب التعديل / السحب:", placeholder="سحب أوردر، تسوية جرد...")
+                    if st.form_submit_button("تأكيد تعديل رصيد الفرع", use_container_width=True):
+                        manual_adjust_branch_stock(adj_b, int(adj_qty), adj_type, adj_notes)
+                        st.success(f"تمت تسوية رصيد فرع {adj_b} بنجاح!")
+                        st.rerun()
 
     # ================= 2.B قسم الإيفنتات الخارجية =================
     elif sec_choice == "🎪 حجوزات الإيفنتات":
@@ -1154,7 +1190,7 @@ elif role == "admin":
 
                     if st.button(f"🗑️ حذف الإيفنت #{ev['id']}", key=f"del_ev_{ev['id']}"):
                         delete_event(ev['id'])
-                        st.warning("تم حذف الإيفنت.")
+                        st.warning("تم حذف الإيفنت ومسح كل ما يتعلق به من مبيعات ومصروفات واسترجاع الورق بنجاح.")
                         st.rerun()
 
             st.markdown("---")
@@ -1185,7 +1221,7 @@ elif role == "admin":
                     n_rent = st.number_input(f"الإيجار الشهري ({b_name}):", value=float(cfg.get('rent', 0.0)), step=100.0)
                     n_sal = st.number_input(f"إجمالي المرتبات والعمالة ({b_name}):", value=float(cfg.get('salary', 0.0)), step=100.0)
                     n_bills = st.number_input(f"فواتير وأقساط شهرية ({b_name}):", value=float(cfg.get('bills', 0.0)), step=50.0)
-                    n_cost = st.number_input(f"تكلفة الورقة والحبر ({b_name}):", value=float(cfg.get('cost_per_print', 3.0)), step=0.5)
+                    n_cost = st.number_input(f"تكلفة الورقة ({b_name}):", value=float(cfg.get('cost_per_print', 1.1)), step=0.1)
                     monthly_fixed = n_rent + n_sal + n_bills
                     st.info(f"إجمالي التكلفة الثابتة الشهرية: **{monthly_fixed:,.0f} ج.م** (~ {monthly_fixed/30:,.0f} ج / يومياً)")
                     if st.form_submit_button(f"💾 حفظ إعدادات {b_name}", use_container_width=True):
@@ -1219,60 +1255,101 @@ elif role == "admin":
         total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
         total_cust_all = len(tx_subset)
         
-        # المصروفات التشغيلية الحقيقية (بدون أرباح الشركاء المسحوبة ولا مشتريات الأصول)
+        # المصروفات النثرية والتشغيلية المسجلة فعلياً
         opex_df = exp_subset[~exp_subset['category'].isin(['مشتريات مخزن وأصول', 'توزيعات أرباح'])] if not exp_subset.empty else pd.DataFrame()
-        total_exp_all = opex_df['amount'].sum() if not opex_df.empty else 0.0
+        paid_opex_total = opex_df['amount'].sum() if not opex_df.empty else 0.0
 
+        # أرباح مسحوبة
         drawings_df = exp_subset[exp_subset['category'] == 'توزيعات أرباح'] if not exp_subset.empty else pd.DataFrame()
         drawings_exp_sum = drawings_df['amount'].sum() if not drawings_df.empty else 0.0
         total_drawings = all_drawings['amount'].sum() + drawings_exp_sum
 
-        # صافي الربح = الإيرادات - المصروفات التشغيلية
-        net_profit = total_rev_all - total_exp_all
+        # تكلفة الورق المباشرة (COGS) بناءً على إعدادات الفرع
+        cfg_cost = float(get_branch_settings(selected_branch if selected_branch in ["9A", "Heaven"] else "9A").get("cost_per_print", 1.1))
+        cogs_total = total_prints_all * cfg_cost
 
-        # السيولة الدقيقة المحسوبة (التي تطابق الواقع 100%)
-        uncollected_cash = tx_subset[tx_subset['is_collected'] == 0]['amount_paid'].sum() if not tx_subset.empty else 0.0
-        collected_cash = total_rev_all - uncollected_cash
-        safe_cash = max(collected_cash - total_exp_all - total_drawings, 0.0)
+        # صافي الأرباح المحققة (المبيعات - تكاليف التشغيل المدفوعة)
+        net_profit = total_rev_all - paid_opex_total
+
+        # الكاش المعلق برة (الصافي من كل شيفت)
+        uncollected_tx = tx_subset[tx_subset['is_collected'] == 0]
+        uncollected_cash_raw = uncollected_tx['amount_paid'].sum() if not uncollected_tx.empty else 0.0
+        collected_cash = total_rev_all - uncollected_cash_raw
+        safe_cash = max(collected_cash - paid_opex_total - total_drawings, 0.0)
 
         waste_count = get_waste_count(selected_branch)
         free_count = get_free_count(selected_branch)
 
-        # ----------------- المؤشرات المالية العلوية -----------------
+        # ----------------- المؤشرات العلوية -----------------
         st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية (P&L)")
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
-        kpi2.metric("🖨️ الورق المستهلك", f"{total_prints_all:,} ورقة", delta=f"{total_prints_all*3:,.0f} ج خامات", delta_color="off")
-        kpi3.metric("🏢 المصاريف التشغيلية", f"{total_exp_all:,.0f} ج.م", delta=f"-{total_exp_all:,.0f}", delta_color="normal")
+        kpi2.metric("🖨️ استهلاك الورق", f"{total_prints_all:,} ورقة", delta=f"{cogs_total:,.0f} ج خامات (×{cfg_cost}ج)", delta_color="off")
+        kpi3.metric("🏢 المصروفات المسجلة", f"{paid_opex_total:,.0f} ج.م", delta=f"-{paid_opex_total:,.0f}", delta_color="normal")
         kpi4.metric("📈 صافي الأرباح المحققة", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
 
         st.markdown("#### 💵 حركة السيولة والفلوس فين؟")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
-        kpi5.metric("🏦 الكاش المتبقي بالخزينة (معاك)", f"{safe_cash:,.0f} ج.م", delta="في يدك الآن")
-        kpi6.metric("⏳ فلوس معلقة برة (ذمم)", f"{uncollected_cash:,.0f} ج.م", delta="عهدة الموظفين", delta_color="off")
-        kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات الشركاء", delta_color="off")
+        kpi5.metric("🏦 الكاش بالخزينة (في يدك)", f"{safe_cash:,.0f} ج.م", delta="كاش متاح")
+        kpi6.metric("⏳ عهدة معلقة مع الموظفين", f"{uncollected_cash_raw:,.0f} ج.م", delta="لم يتم توريدها", delta_color="off")
+        kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات ملاك", delta_color="off")
         kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
         st.markdown("---")
 
-        col_act_c1, col_act_c2 = st.columns(2)
-        with col_act_c1:
-            with st.expander("📥 تسليم وتوريد الكاش المعلق إلى الخزينة"):
-                st.write(f"المبلغ المعلق غير المورد حالياً: **{uncollected_cash:,.0f} ج.م**")
-                if st.button("✅ تأكيد استلام وتوريد كل الكاش المعلق للخزينة", use_container_width=True):
-                    mark_transactions_collected(selected_branch)
-                    st.success("تم تأكيد الاستلام وتوريد الفلوس للخزينة!")
-                    st.rerun()
-        with col_act_c2:
-            with st.expander("💼 تسجيل سحب أرباح للشركاء (Drawings)"):
-                with st.form("drawings_form", clear_on_submit=True):
-                    d_amt = st.number_input("المبلغ المسحوب (ج.م):", min_value=100.0, step=500.0)
-                    d_rec = st.text_input("اسم المستلم / الشريك:")
-                    d_note = st.text_input("ملاحظات:")
-                    if st.form_submit_button("سحب الأرباح", use_container_width=True):
-                        if d_amt and d_rec.strip():
-                            record_cash_drawing(float(d_amt), d_rec.strip(), d_note.strip())
-                            st.success("تم تسجيل مسحوبات الأرباح بنجاح!")
-                            st.rerun()
+        # ----------------- قسم تسليم وتوريد العهدة الصافية بالأيام -----------------
+        st.markdown("### 📥 جدول تسليم وتوريد عهدة الأيام المعلقة (بالصافي)")
+        st.caption("يعرض الأيام التي لم يتم توريد كاشها بعد مع حساب صافي المطلوب توريده (المبيعات - نثريات الفرع):")
+        
+        with engine.connect() as conn:
+            uncoll_days = pd.read_sql_query(text("""
+                SELECT d.date, t.branch, SUM(t.amount_paid) as sales_amount
+                FROM transactions t
+                JOIN days d ON t.day_id = d.id
+                WHERE t.is_collected = 0
+                GROUP BY d.date, t.branch
+                ORDER BY d.date DESC
+            """), conn)
+
+        if not uncoll_days.empty:
+            for idx, row in uncoll_days.iterrows():
+                d_val = row['date']
+                b_val = row['branch']
+                s_amt = float(row['sales_amount'])
+                
+                # جلب نثريات هذا اليوم لهذا الفرع
+                with engine.connect() as conn:
+                    day_exp_res = conn.execute(text("""
+                        SELECT COALESCE(SUM(amount), 0)
+                        FROM expenses
+                        WHERE date = :d AND branch = :b AND category = 'نثريات وتشغيل'
+                    """), {"d": d_val, "b": b_val}).fetchone()[0]
+                d_exp = float(day_exp_res)
+                net_to_collect = max(s_amt - d_exp, 0.0)
+
+                col_u1, col_u2, col_u3, col_u4, col_u5 = st.columns([2, 2, 2, 2, 2])
+                col_u1.write(f"📅 **يوم: {d_val}**")
+                col_u2.write(f"🏢 فرع: **{b_val}**")
+                col_u3.write(f"المبيعات: **{s_amt:,.0f} ج**")
+                col_u4.write(f"المصروف: **{d_exp:,.0f} ج** | الصافي: **{net_to_collect:,.0f} ج**")
+                with col_u5:
+                    if st.button(f"تأكيد استلام الصافي ({net_to_collect:,.0f} ج)", key=f"btn_coll_{idx}", use_container_width=True):
+                        mark_day_collected(d_val, b_val)
+                        st.success(f"تم توريد كاش يوم {d_val} لفرع {b_val} بالخزينة بنجاح!")
+                        st.rerun()
+        else:
+            st.success("✅ كل المبيعات والعهد السابقة تم توريدها للخزينة بالكامل، لا توجد عهدة معلقة حالياً!")
+
+        st.markdown("---")
+        with st.expander("💼 تسجيل سحب أرباح للشركاء (Drawings)"):
+            with st.form("drawings_form", clear_on_submit=True):
+                d_amt = st.number_input("المبلغ المسحوب (ج.م):", min_value=100.0, step=500.0)
+                d_rec = st.text_input("اسم المستلم / الشريك:")
+                d_note = st.text_input("ملاحظات:")
+                if st.form_submit_button("سحب الأرباح", use_container_width=True):
+                    if d_amt and d_rec.strip():
+                        record_cash_drawing(float(d_amt), d_rec.strip(), d_note.strip())
+                        st.success("تم تسجيل مسحوبات الأرباح بنجاح!")
+                        st.rerun()
 
         st.markdown("---")
         with st.expander("💸 تسجيل مصروفات جديدة بواسطة الأدمن", expanded=False):
@@ -1328,7 +1405,7 @@ elif role == "admin":
             else:
                 st.info("لا توجد مصروفات مسجلة اليوم.")
 
-        # ----------------- جدول سلوك العمليات اليومي -----------------
+        # ----------------- جدول سلوك العمليات اليومي مع حساب تكلفة التشغيل -----------------
         st.markdown("---")
         if not tx_subset.empty:
             days_df = tx_subset.groupby('date').agg(
@@ -1348,6 +1425,24 @@ elif role == "admin":
             behavior_df['date_obj'] = pd.to_datetime(behavior_df['date'])
             behavior_df['day_name'] = behavior_df['date_obj'].dt.day_name().map(ARABIC_DAYS)
 
+            # دمج مصروفات النثريات الفعلية لليوم
+            day_exp_map = exp_subset.groupby('operational_date')['amount'].sum().to_dict() if not exp_subset.empty else {}
+            behavior_df['day_expenses'] = behavior_df['date'].map(day_exp_map).fillna(0.0)
+
+            # احتساب تكلفة التشغيل الثابتة التقديرية لكل يوم (255 لـ 9A و 167 لـ Heaven و 422 للاثنين معاً)
+            if selected_branch == "9A":
+                daily_fixed_cost = 255.0
+            elif selected_branch == "Heaven":
+                daily_fixed_cost = 167.0
+            elif selected_branch == "Events":
+                daily_fixed_cost = 0.0
+            else:
+                daily_fixed_cost = 422.0
+
+            cfg_cost_val = float(get_branch_settings("9A").get("cost_per_print", 1.1))
+            behavior_df['paper_cost'] = behavior_df['total_prints'] * cfg_cost_val
+            behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - daily_fixed_cost
+
             def extract_time(ts):
                 if pd.isna(ts): return "-"
                 return format_arabic_time(pd.to_datetime(ts).strftime('%I:%M %p'))
@@ -1356,9 +1451,10 @@ elif role == "admin":
             behavior_df['last_time'] = behavior_df['last_customer_time'].apply(extract_time)
             behavior_df['peak_str'] = behavior_df['peak_hour'].apply(lambda x: f"{int(x)}:00" if pd.notna(x) else "-")
 
-            st.subheader(f"📋 إيرادات وسلوك العمليات اليومي ({selected_branch})")
-            display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue']].copy()
-            display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق المطبوع', 'الإيراد (ج.م)']
+            st.subheader(f"📋 إيرادات وسلوك العمليات والربح اليومي الفعلي ({selected_branch})")
+            st.caption(f"صافي ربح اليوم يحسب بعد خصم استهلاك الورق (×{cfg_cost_val}ج) ونثريات اليوم وتكلفة التشغيل الثابتة المقدرة ({daily_fixed_cost:,.0f} ج/يوم):")
+            display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue', 'day_expenses', 'daily_net_profit']].copy()
+            display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
             st.dataframe(display_df, use_container_width=True, hide_index=True)
 
         st.subheader(f"💸 سجل ومصاريف الأيام خلال الفترة ({selected_branch})")
