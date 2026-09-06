@@ -52,7 +52,7 @@ st.markdown("""
         text-align: right;
     }
 
-    /* حماية الأيقونات وأسهم الـ Expander من التحول لكلمات إنجليزية */
+    /* حماية الأيقونات وأسهم الـ Expander من التحول لكلمات إنجليزية مشوهة */
     [data-testid="stExpanderToggleIcon"], .material-icons, [class*="material-symbols"] {
         font-family: 'Material Icons', 'Material Symbols Outlined' !important;
         direction: ltr !important;
@@ -263,7 +263,6 @@ def init_db():
     with engine.begin() as conn:
         conn.execute(text("UPDATE expenses SET category = 'توزيعات أرباح' WHERE description LIKE '%توزيع ارباح%'"))
 
-    # ضبط الأرصدة الافتتاحية بدقة مطابقة للواقع
     with engine.begin() as conn:
         check_init = conn.execute(text("SELECT COUNT(*) FROM inventory WHERE branch = 'Warehouse'")).fetchone()[0]
         if check_init == 0:
@@ -276,8 +275,7 @@ def init_db():
                 VALUES (:ts, 'restock_ink', 3, 'رصيد حبر افتتاحي (علبة ونصف = 3 مليات)', 'Warehouse_Ink')
             """), {"ts": get_egypt_now_str()})
 
-        # كل المعاملات تعتبر محصلة كاش في جيبك (بما فيها إيفنتات فادي الـ 3100 ج)
-        # المعلق فقط: مبيعات السبت 5-9 لفرعي 9A (340 ج) و Heaven (1330 ج) = 1670 ج.م
+        # تسوية المعاملات السابقة كمحصلة مع عزل مبيعات السبت 5-9 المعلقة فقط (1,670 ج)
         conn.execute(text("UPDATE transactions SET is_collected = 1"))
         conn.execute(text("""
             UPDATE transactions 
@@ -593,7 +591,7 @@ def create_event(event_date: str, client_name: str, location: str, device: str, 
                 VALUES (:day_id, :ts, 0, :amount, 'Events', 0)
             """), {"day_id": d_id, "ts": now_str, "amount": deposit_paid})
 
-def complete_event_settlement(event_id: int, prints_count: int, transport_cost: float, worker_cost: float):
+def complete_event_settlement(event_id: int, from_branch: str, prints_count: int, transport_cost: float, worker_cost: float):
     now_str = get_egypt_now_str()
     paper_cost = prints_count * 3.0
     total_exp = paper_cost + transport_cost + worker_cost
@@ -605,17 +603,35 @@ def complete_event_settlement(event_id: int, prints_count: int, transport_cost: 
             total_rev = ev["total_amount"]
             profit = total_rev - total_exp
             d_id = get_or_create_day_id(event_date)
+            
+            # 1. توريد المبلغ المتبقي كإيراد
             if rem > 0:
                 conn.execute(text("""
                     INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
                     VALUES (:day_id, :ts, :prints, :amount, 'Events', 1)
                 """), {"day_id": d_id, "ts": now_str, "prints": prints_count, "amount": rem})
+            
+            # 2. خصم الورق الفعلي من رصيد الفرع المحدد في المخزون
+            if prints_count > 0 and from_branch:
+                conn.execute(text("""
+                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                    VALUES (:ts, 'consumption', :qty, :notes, :branch)
+                """), {
+                    "ts": now_str,
+                    "qty": -prints_count,
+                    "notes": f"استهلاك ورق إيفنت #{event_id} ({ev['client_name']})",
+                    "branch": from_branch
+                })
+
+            # 3. تسجيل مصروفات الإيفنت
             if total_exp > 0:
-                desc = f"مصروف إيفنت #{event_id} ({ev['client_name']}): ورق={paper_cost}ج، مواصلات={transport_cost}ج، موظف={worker_cost}ج"
+                desc = f"مصروف إيفنت #{event_id} ({ev['client_name']}): ورق={paper_cost}ج من {from_branch}، مواصلات={transport_cost}ج، موظف={worker_cost}ج"
                 conn.execute(text("""
                     INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category)
                     VALUES (:day_id, :ts, :date, 'Events', :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات')
                 """), {"day_id": d_id, "ts": now_str, "date": event_date, "amount": total_exp, "desc": desc})
+
+            # 4. تحديث حالة الإيفنت
             conn.execute(text("""
                 UPDATE events
                 SET deposit_paid = total_amount, remaining_amount = 0, status = 'تم التنفيذ والتسوية',
@@ -676,7 +692,7 @@ role = st.session_state.role
 branch = st.session_state.branch
 
 # ==============================================================
-# 1. EMPLOYEE SCREEN
+# 1. EMPLOYEE SCREEN (واجهة الموظف)
 # ==============================================================
 if role == "employee":
     current_stock = get_current_stock(branch)
@@ -1112,13 +1128,28 @@ elif role == "admin":
                         sc4.success(f"📈 صافي ربح: {ev.get('net_profit', 0):,.0f} ج")
                     else:
                         with st.form(f"settle_form_{ev['id']}"):
-                            c_p, c_t, c_w = st.columns(3)
-                            in_prints = c_p.number_input("الورق المستهلك:", min_value=0, max_value=2000, value=50, step=10, key=f"p_{ev['id']}")
-                            in_trans = c_t.number_input("المواصلات (ج):", min_value=0.0, value=100.0, step=50.0, key=f"t_{ev['id']}")
-                            in_worker = c_w.number_input("أجر الموظف (ج):", min_value=0.0, value=100.0, step=10.0, key=f"w_{ev['id']}")
-                            if st.form_submit_button("✅ اعتماد التنفيذ والتسوية", use_container_width=True):
-                                complete_event_settlement(ev['id'], int(in_prints), float(in_trans), float(in_worker))
-                                st.success("تمت تسوية الإيفنت بنجاح!")
+                            c_b, c_p = st.columns(2)
+                            with c_b:
+                                default_idx = 0 if ev.get('device') == '9A' else 1
+                                settle_branch = st.selectbox(
+                                    "🏢 خصم الورق من عهدة فرع:",
+                                    ["9A", "Heaven", "Warehouse"],
+                                    index=default_idx,
+                                    key=f"b_{ev['id']}",
+                                    format_func=lambda x: f"فرع {x}" if x != "Warehouse" else "المخزن العام الرئيسي"
+                                )
+                            with c_p:
+                                in_prints = c_p.number_input("الورق المستهلك في الإيفنت:", min_value=0, max_value=2000, value=50, step=10, key=f"p_{ev['id']}")
+
+                            c_t, c_w = st.columns(2)
+                            with c_t:
+                                in_trans = c_t.number_input("المواصلات (ج):", min_value=0.0, value=100.0, step=50.0, key=f"t_{ev['id']}")
+                            with c_w:
+                                in_worker = c_w.number_input("أجر الموظف (ج):", min_value=0.0, value=100.0, step=10.0, key=f"w_{ev['id']}")
+
+                            if st.form_submit_button("✅ اعتماد التنفيذ والتسوية وخصم الورق", use_container_width=True):
+                                complete_event_settlement(ev['id'], settle_branch, int(in_prints), float(in_trans), float(in_worker))
+                                st.success(f"تمت تسوية الإيفنت بنجاح وخصم {in_prints} ورقة من رصيد {settle_branch}!")
                                 st.rerun()
 
                     if st.button(f"🗑️ حذف الإيفنت #{ev['id']}", key=f"del_ev_{ev['id']}"):
