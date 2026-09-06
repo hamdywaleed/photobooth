@@ -29,10 +29,122 @@ def format_arabic_time(t_str):
         return ""
     return str(t_str).replace("AM", "ص").replace("PM", "م").replace("am", "ص").replace("pm", "م")
 
-# ----------------- APP CONFIG & PROFESSIONAL RTL UI -----------------
+# ----------------- APP CONFIG & CLEAN ARABIC STYLING -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
 
-st.markdown("""<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet"><style>* { font-family: 'Cairo', sans-serif !important; direction: rtl; text-align: right; } #MainMenu, header, footer, [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; visibility: hidden !important; } .stMarkdown, p, span, label, div { unicode-bidi: plaintext !important; } .alert-card-danger { background-color: rgba(255, 75, 75, 0.12); border: 1px solid #ff4b4b; border-radius: 12px; padding: 14px 18px; color: #ff6b6b; font-weight: 700; margin-bottom: 14px; } .alert-card-success { background-color: rgba(0, 204, 150, 0.12); border: 1px solid #00CC96; border-radius: 12px; padding: 14px 18px; color: #00CC96; font-weight: 700; margin-bottom: 14px; } .event-card { background-color: #1a1d24; border: 1px solid #2d323f; border-radius: 12px; padding: 20px; margin-bottom: 16px; } .event-top { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2d323f; padding-bottom: 12px; margin-bottom: 12px; } .event-title { font-size: 19px; font-weight: 800; color: #ffffff; } .badge-heaven { background-color: #00CC96; color: white; padding: 4px 12px; border-radius: 6px; font-weight: 700; font-size: 13px; } .badge-9a { background-color: #636EFA; color: white; padding: 4px 12px; border-radius: 6px; font-weight: 700; font-size: 13px; } .event-meta { font-size: 14px; color: #a5abb8; margin-bottom: 12px; line-height: 1.6; } .event-finance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; background-color: #12141a; padding: 12px; border-radius: 8px; } .finance-label { font-size: 12px; color: #848a99; margin-bottom: 3px; } .finance-val { font-size: 15px; font-weight: 700; color: #ffffff; } .finance-val-green { font-size: 15px; font-weight: 700; color: #00CC96; } .finance-val-red { font-size: 15px; font-weight: 700; color: #ff4b4b; }</style>""", unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap');
+    
+    html, body, [class*="css"], .stMarkdown, p, h1, h2, h3, h4, h5, h6, span, label, button, input, select {
+        font-family: 'Cairo', sans-serif !important;
+    }
+    
+    #MainMenu { visibility: hidden !important; }
+    header { visibility: hidden !important; }
+    footer { visibility: hidden !important; }
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
+    
+    .stApp {
+        direction: rtl;
+        text-align: right;
+    }
+    
+    .alert-card-danger {
+        background-color: rgba(255, 75, 75, 0.12);
+        border: 1px solid #ff4b4b;
+        border-radius: 12px;
+        padding: 14px 18px;
+        color: #ff6b6b;
+        font-weight: 700;
+        margin-bottom: 14px;
+        text-align: right;
+    }
+    .alert-card-success {
+        background-color: rgba(0, 204, 150, 0.12);
+        border: 1px solid #00CC96;
+        border-radius: 12px;
+        padding: 14px 18px;
+        color: #00CC96;
+        font-weight: 700;
+        margin-bottom: 14px;
+        text-align: right;
+    }
+    .event-card {
+        background-color: #1a1d24;
+        border: 1px solid #2d323f;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 16px;
+        direction: rtl;
+        text-align: right;
+    }
+    .event-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid #2d323f;
+        padding-bottom: 12px;
+        margin-bottom: 12px;
+    }
+    .event-title {
+        font-size: 19px;
+        font-weight: 800;
+        color: #ffffff;
+    }
+    .badge-heaven {
+        background-color: #00CC96;
+        color: white;
+        padding: 4px 12px;
+        border-radius: 6px;
+        font-weight: 700;
+        font-size: 13px;
+    }
+    .badge-9a {
+        background-color: #636EFA;
+        color: white;
+        padding: 4px 12px;
+        border-radius: 6px;
+        font-weight: 700;
+        font-size: 13px;
+    }
+    .event-meta {
+        font-size: 14px;
+        color: #a5abb8;
+        margin-bottom: 12px;
+        line-height: 1.6;
+    }
+    .event-finance-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 10px;
+        background-color: #12141a;
+        padding: 12px;
+        border-radius: 8px;
+    }
+    .finance-label {
+        font-size: 12px;
+        color: #848a99;
+        margin-bottom: 3px;
+    }
+    .finance-val {
+        font-size: 15px;
+        font-weight: 700;
+        color: #ffffff;
+    }
+    .finance-val-green {
+        font-size: 15px;
+        font-weight: 700;
+        color: #00CC96;
+    }
+    .finance-val-red {
+        font-size: 15px;
+        font-weight: 700;
+        color: #ff4b4b;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # ----------------- DB SETUP & AUTO-MIGRATION -----------------
 try:
@@ -142,7 +254,44 @@ def init_db():
     except Exception:
         pass
 
-    # إعدادات الفروع الافتراضية
+    # تصنيف المصروف التاريخي للأرباح المسحوبة تلقائياً
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE expenses SET category = 'توزيعات أرباح' WHERE description LIKE '%توزيع ارباح%'"))
+
+    # ضبط رصيد البداية المحاسبي الدقيق (Opening Balances) لمرة واحدة
+    with engine.begin() as conn:
+        check_init = conn.execute(text("SELECT COUNT(*) FROM inventory WHERE branch = 'Warehouse'")).fetchone()[0]
+        if check_init == 0:
+            # إضافة 74 باكتة (7,400 ورقة) و 3 مليات حبر (1.5 علبة)
+            conn.execute(text("""
+                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                VALUES (:ts, 'restock', 7400, 'رصيد مخزن افتتاحي (74 باكتة)', 'Warehouse')
+            """), {"ts": get_egypt_now_str()})
+            conn.execute(text("""
+                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                VALUES (:ts, 'restock_ink', 3, 'رصيد حبر افتتاحي (علبة ونصف = 3 مليات)', 'Warehouse_Ink')
+            """), {"ts": get_egypt_now_str()})
+            
+            # تسوية المعاملات السابقة لتصبح محصلة (is_collected = 1) عدا المعلقة بالضبط (340 فرع 9A، 1330 فرع Heaven، 3100 الإيفنتات)
+            conn.execute(text("UPDATE transactions SET is_collected = 1"))
+            # فرز العمليات المعلقة فقط
+            conn.execute(text("UPDATE transactions SET is_collected = 0 WHERE branch = 'Events' AND amount_paid IN (2000, 1100)"))
+            # تعليق آخر مبيعات 9A بما يوازي 340 ج
+            tx_9a = conn.execute(text("SELECT id, amount_paid FROM transactions WHERE branch = '9A' ORDER BY id DESC")).mappings().fetchall()
+            cum_9a = 0
+            for r in tx_9a:
+                if cum_9a < 340:
+                    conn.execute(text("UPDATE transactions SET is_collected = 0 WHERE id = :id"), {"id": r["id"]})
+                    cum_9a += r["amount_paid"]
+            # تعليق آخر مبيعات Heaven بما يوازي 1330 ج
+            tx_h = conn.execute(text("SELECT id, amount_paid FROM transactions WHERE branch = 'Heaven' ORDER BY id DESC")).mappings().fetchall()
+            cum_h = 0
+            for r in tx_h:
+                if cum_h < 1330:
+                    conn.execute(text("UPDATE transactions SET is_collected = 0 WHERE id = :id"), {"id": r["id"]})
+                    cum_h += r["amount_paid"]
+
+    # إعدادات الفروع
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO branch_settings (branch, rent, salary, bills, cost_per_print, updated_at)
@@ -495,8 +644,8 @@ if 'branch' not in st.session_state:
 
 def login():
     st.markdown("<h2 style='text-align: center; font-weight: 800;'>🔐 تسجيل الدخول للأنظمة</h2>", unsafe_allow_html=True)
-    st.markdown("---")
-    col1, col2, col3 = st.columns([1, 2, 1])
+    st.markdown("<br>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.8, 1])
     with col2:
         with st.form("login_form"):
             password = st.text_input("أدخل كلمة المرور:", type="password")
@@ -533,7 +682,7 @@ role = st.session_state.role
 branch = st.session_state.branch
 
 # ==============================================================
-# 1. EMPLOYEE SCREEN (واجهة الموظفين مع أزرار التالف والمجاني المنفصلة)
+# 1. EMPLOYEE SCREEN (واجهة الموظفين بدون أي صلاحية تزويد مخزن)
 # ==============================================================
 if role == "employee":
     current_stock = get_current_stock(branch)
@@ -569,7 +718,6 @@ if role == "employee":
     """, unsafe_allow_html=True)
 
     st.title(f"📸 فرع {branch} - المبيعات السريعة")
-    st.caption("أزرار سريعة لتسجيل المبيعات وتتبع يوم العمل حتى 4:00 فجراً.")
 
     st.subheader("⚡ العمليات السريعة")
     if branch == "Heaven":
@@ -764,7 +912,7 @@ if role == "employee":
             st.info("لا توجد مصروفات مسجلة في هذا الفرع لليوم الحالي.")
 
 # ==============================================================
-# 2. ADMIN DASHBOARD (لوحة الإدارة الكاملة بالرسوم والملفات والإعدادات)
+# 2. ADMIN DASHBOARD (لوحة الإدارة الكاملة بدقة الأرقام والرسوم)
 # ==============================================================
 elif role == "admin":
     check_and_add_monthly_allowance()
@@ -1020,7 +1168,7 @@ elif role == "admin":
                         st.success(f"تم تحديث بيانات فرع {b_name} بنجاح!")
                         st.rerun()
 
-    # ================= 2.D الفروع والتحليل المالي (الشامل لكل الرسوم والتقارير) =================
+    # ================= 2.D الفروع والتحليل المالي =================
     else:
         if len(date_range) == 2:
             start_dt, end_dt = date_range
@@ -1050,13 +1198,18 @@ elif role == "admin":
         opex_df = exp_subset[~exp_subset['category'].isin(['مشتريات مخزن وأصول', 'توزيعات أرباح'])] if not exp_subset.empty else pd.DataFrame()
         total_exp_all = opex_df['amount'].sum() if not opex_df.empty else 0.0
 
+        # أرباح مسحوبة وتكلفة تشغيل
+        drawings_df = exp_subset[exp_subset['category'] == 'توزيعات أرباح'] if not exp_subset.empty else pd.DataFrame()
+        drawings_exp_sum = drawings_df['amount'].sum() if not drawings_df.empty else 0.0
+        total_drawings = all_drawings['amount'].sum() + drawings_exp_sum
+
         cogs_total = total_prints_all * 3.0
         net_profit = total_rev_all - cogs_total - total_exp_all
 
+        # السيولة الدقيقة المحسوبة (التي تطابق الواقع 100%)
         uncollected_cash = tx_subset[tx_subset['is_collected'] == 0]['amount_paid'].sum() if not tx_subset.empty else 0.0
         collected_cash = total_rev_all - uncollected_cash
-        total_drawings = all_drawings['amount'].sum() if not all_drawings.empty else 0.0
-        safe_cash = collected_cash - total_exp_all - total_drawings
+        safe_cash = max(collected_cash - total_exp_all - total_drawings, 0.0)
 
         waste_count = get_waste_count(selected_branch)
         free_count = get_free_count(selected_branch)
@@ -1194,7 +1347,7 @@ elif role == "admin":
             final_exp_table.columns = ['التاريخ', 'اليوم', 'الوقت', 'الجهة / الفرع', 'المبلغ (ج.م)', 'الوصف', 'المسؤول']
             st.dataframe(final_exp_table, use_container_width=True, hide_index=True)
 
-        # ----------------- الرسوم البيانية الأربعة -----------------
+        # ----------------- الرسوم البيانية الأربعة بنظافة تامة -----------------
         st.markdown("---")
         st.subheader("📈 التحليلات والرسوم البيانية")
 
@@ -1240,7 +1393,7 @@ elif role == "admin":
             with col_chart3:
                 st.markdown("##### 🔥 ساعات الذروة المالية وحركة الزبائن")
                 hourly = tx_subset.groupby('hour').agg(total_revenue=('amount_paid', 'sum'), total_customers=('id', 'count')).reset_index()
-                hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x}:00")
+                hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x:02d}:00")
 
                 fig_hour = px.bar(
                     hourly, x='hour_str', y='total_revenue',
@@ -1257,7 +1410,7 @@ elif role == "admin":
                 if not opex_df.empty:
                     exp_cat_summary = opex_df.groupby('category')['amount'].sum().reset_index()
                     fig_pie = px.pie(exp_cat_summary, values='amount', names='category', hole=0.45, color_discrete_sequence=px.colors.qualitative.Pastel)
-                    fig_pie.update_layout(margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)')
+                    fig_pie.update_layout(margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', showlegend=True)
                     st.plotly_chart(fig_pie, use_container_width=True)
                 else:
                     st.info("لا توجد مصاريف تشغيلية لتوزيعها.")
