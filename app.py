@@ -29,14 +29,15 @@ def format_arabic_time(t_str):
         return ""
     return str(t_str).replace("AM", "ص").replace("PM", "م").replace("am", "ص").replace("pm", "م")
 
-# ----------------- APP CONFIG & CLEAN ARABIC STYLING -----------------
+# ----------------- APP CONFIG & SAFE ARABIC STYLING -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
 
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap');
     
-    html, body, [class*="css"], .stMarkdown, p, h1, h2, h3, h4, h5, h6, span, label, button, input, select {
+    /* تطبيق الخط العربي على النصوص دون كسر خط الأيقونات الخاص بـ Streamlit */
+    p, h1, h2, h3, h4, h5, h6, label, .stMetric, .stDataFrame, .stSelectbox, .stTextInput, .stNumberInput {
         font-family: 'Cairo', sans-serif !important;
     }
     
@@ -50,7 +51,13 @@ st.markdown("""
         direction: rtl;
         text-align: right;
     }
-    
+
+    /* حماية الأيقونات وأسهم الـ Expander من التحول لكلمات إنجليزية */
+    [data-testid="stExpanderToggleIcon"], .material-icons, [class*="material-symbols"] {
+        font-family: 'Material Icons', 'Material Symbols Outlined' !important;
+        direction: ltr !important;
+    }
+
     .alert-card-danger {
         background-color: rgba(255, 75, 75, 0.12);
         border: 1px solid #ff4b4b;
@@ -168,7 +175,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS transactions (
                 {pk_def}, day_id INTEGER NOT NULL, timestamp TEXT NOT NULL,
                 prints_count INTEGER NOT NULL, amount_paid REAL NOT NULL,
-                branch TEXT NOT NULL, is_collected INTEGER DEFAULT 0,
+                branch TEXT NOT NULL, is_collected INTEGER DEFAULT 1,
                 FOREIGN KEY (day_id) REFERENCES days(id)
             )
         """))
@@ -228,7 +235,7 @@ def init_db():
         """))
 
     alters = [
-        "ALTER TABLE transactions ADD COLUMN is_collected INTEGER DEFAULT 0",
+        "ALTER TABLE transactions ADD COLUMN is_collected INTEGER DEFAULT 1",
         "ALTER TABLE expenses ADD COLUMN day_id INTEGER",
         "ALTER TABLE expenses ADD COLUMN category TEXT DEFAULT 'نثريات وتشغيل'",
         "ALTER TABLE audit_logs ADD COLUMN entity_type TEXT DEFAULT 'transaction'",
@@ -242,7 +249,6 @@ def init_db():
         except Exception:
             pass
 
-    # مزامنة المصاريف القديمة مع جدول days
     try:
         with engine.begin() as conn:
             if IS_POSTGRES:
@@ -254,15 +260,13 @@ def init_db():
     except Exception:
         pass
 
-    # تصنيف المصروف التاريخي للأرباح المسحوبة تلقائياً
     with engine.begin() as conn:
         conn.execute(text("UPDATE expenses SET category = 'توزيعات أرباح' WHERE description LIKE '%توزيع ارباح%'"))
 
-    # ضبط رصيد البداية المحاسبي الدقيق (Opening Balances) لمرة واحدة
+    # ضبط الأرصدة الافتتاحية بدقة مطابقة للواقع
     with engine.begin() as conn:
         check_init = conn.execute(text("SELECT COUNT(*) FROM inventory WHERE branch = 'Warehouse'")).fetchone()[0]
         if check_init == 0:
-            # إضافة 74 باكتة (7,400 ورقة) و 3 مليات حبر (1.5 علبة)
             conn.execute(text("""
                 INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
                 VALUES (:ts, 'restock', 7400, 'رصيد مخزن افتتاحي (74 باكتة)', 'Warehouse')
@@ -271,27 +275,17 @@ def init_db():
                 INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
                 VALUES (:ts, 'restock_ink', 3, 'رصيد حبر افتتاحي (علبة ونصف = 3 مليات)', 'Warehouse_Ink')
             """), {"ts": get_egypt_now_str()})
-            
-            # تسوية المعاملات السابقة لتصبح محصلة (is_collected = 1) عدا المعلقة بالضبط (340 فرع 9A، 1330 فرع Heaven، 3100 الإيفنتات)
-            conn.execute(text("UPDATE transactions SET is_collected = 1"))
-            # فرز العمليات المعلقة فقط
-            conn.execute(text("UPDATE transactions SET is_collected = 0 WHERE branch = 'Events' AND amount_paid IN (2000, 1100)"))
-            # تعليق آخر مبيعات 9A بما يوازي 340 ج
-            tx_9a = conn.execute(text("SELECT id, amount_paid FROM transactions WHERE branch = '9A' ORDER BY id DESC")).mappings().fetchall()
-            cum_9a = 0
-            for r in tx_9a:
-                if cum_9a < 340:
-                    conn.execute(text("UPDATE transactions SET is_collected = 0 WHERE id = :id"), {"id": r["id"]})
-                    cum_9a += r["amount_paid"]
-            # تعليق آخر مبيعات Heaven بما يوازي 1330 ج
-            tx_h = conn.execute(text("SELECT id, amount_paid FROM transactions WHERE branch = 'Heaven' ORDER BY id DESC")).mappings().fetchall()
-            cum_h = 0
-            for r in tx_h:
-                if cum_h < 1330:
-                    conn.execute(text("UPDATE transactions SET is_collected = 0 WHERE id = :id"), {"id": r["id"]})
-                    cum_h += r["amount_paid"]
 
-    # إعدادات الفروع
+        # كل المعاملات تعتبر محصلة كاش في جيبك (بما فيها إيفنتات فادي الـ 3100 ج)
+        # المعلق فقط: مبيعات السبت 5-9 لفرعي 9A (340 ج) و Heaven (1330 ج) = 1670 ج.م
+        conn.execute(text("UPDATE transactions SET is_collected = 1"))
+        conn.execute(text("""
+            UPDATE transactions 
+            SET is_collected = 0 
+            WHERE timestamp >= '2026-09-05 05:00:00' 
+              AND branch IN ('9A', 'Heaven')
+        """))
+
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO branch_settings (branch, rent, salary, bills, cost_per_print, updated_at)
@@ -614,7 +608,7 @@ def complete_event_settlement(event_id: int, prints_count: int, transport_cost: 
             if rem > 0:
                 conn.execute(text("""
                     INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
-                    VALUES (:day_id, :ts, :prints, :amount, 'Events', 0)
+                    VALUES (:day_id, :ts, :prints, :amount, 'Events', 1)
                 """), {"day_id": d_id, "ts": now_str, "prints": prints_count, "amount": rem})
             if total_exp > 0:
                 desc = f"مصروف إيفنت #{event_id} ({ev['client_name']}): ورق={paper_cost}ج، مواصلات={transport_cost}ج، موظف={worker_cost}ج"
@@ -682,7 +676,7 @@ role = st.session_state.role
 branch = st.session_state.branch
 
 # ==============================================================
-# 1. EMPLOYEE SCREEN (واجهة الموظفين بدون أي صلاحية تزويد مخزن)
+# 1. EMPLOYEE SCREEN
 # ==============================================================
 if role == "employee":
     current_stock = get_current_stock(branch)
@@ -912,7 +906,7 @@ if role == "employee":
             st.info("لا توجد مصروفات مسجلة في هذا الفرع لليوم الحالي.")
 
 # ==============================================================
-# 2. ADMIN DASHBOARD (لوحة الإدارة الكاملة بدقة الأرقام والرسوم)
+# 2. ADMIN DASHBOARD
 # ==============================================================
 elif role == "admin":
     check_and_add_monthly_allowance()
@@ -1194,17 +1188,16 @@ elif role == "admin":
         total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
         total_cust_all = len(tx_subset)
         
-        # استبعاد مشتريات المخزن وتوزيعات الأرباح من المصروفات التشغيلية
+        # المصروفات التشغيلية الحقيقية (بدون أرباح الشركاء المسحوبة ولا مشتريات الأصول)
         opex_df = exp_subset[~exp_subset['category'].isin(['مشتريات مخزن وأصول', 'توزيعات أرباح'])] if not exp_subset.empty else pd.DataFrame()
         total_exp_all = opex_df['amount'].sum() if not opex_df.empty else 0.0
 
-        # أرباح مسحوبة وتكلفة تشغيل
         drawings_df = exp_subset[exp_subset['category'] == 'توزيعات أرباح'] if not exp_subset.empty else pd.DataFrame()
         drawings_exp_sum = drawings_df['amount'].sum() if not drawings_df.empty else 0.0
         total_drawings = all_drawings['amount'].sum() + drawings_exp_sum
 
-        cogs_total = total_prints_all * 3.0
-        net_profit = total_rev_all - cogs_total - total_exp_all
+        # صافي الربح = الإيرادات - المصروفات التشغيلية
+        net_profit = total_rev_all - total_exp_all
 
         # السيولة الدقيقة المحسوبة (التي تطابق الواقع 100%)
         uncollected_cash = tx_subset[tx_subset['is_collected'] == 0]['amount_paid'].sum() if not tx_subset.empty else 0.0
@@ -1218,15 +1211,15 @@ elif role == "admin":
         st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية (P&L)")
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
-        kpi2.metric("🏷️ تكلفة الورق (COGS)", f"{cogs_total:,.0f} ج.م", delta=f"{total_prints_all:,} ورقة × 3ج", delta_color="off")
+        kpi2.metric("🖨️ الورق المستهلك", f"{total_prints_all:,} ورقة", delta=f"{total_prints_all*3:,.0f} ج خامات", delta_color="off")
         kpi3.metric("🏢 المصاريف التشغيلية", f"{total_exp_all:,.0f} ج.م", delta=f"-{total_exp_all:,.0f}", delta_color="normal")
-        kpi4.metric("📈 صافي الربح الفعلي", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
+        kpi4.metric("📈 صافي الأرباح المحققة", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
 
-        st.markdown("#### 💵 حركة السيولة والعمليات")
+        st.markdown("#### 💵 حركة السيولة والفلوس فين؟")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
-        kpi5.metric("🏦 الكاش المتبقي بالخزينة", f"{safe_cash:,.0f} ج.م")
-        kpi6.metric("⏳ فلوس معلقة برة (ذمم)", f"{uncollected_cash:,.0f} ج.م", delta="عهدة فروع وإيفنتات", delta_color="off")
-        kpi7.metric("👥 إجمالي العمليات", f"{total_cust_all:,}")
+        kpi5.metric("🏦 الكاش المتبقي بالخزينة (معاك)", f"{safe_cash:,.0f} ج.م", delta="في يدك الآن")
+        kpi6.metric("⏳ فلوس معلقة برة (ذمم)", f"{uncollected_cash:,.0f} ج.م", delta="عهدة السبت مع الموظفين", delta_color="off")
+        kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات الشركاء", delta_color="off")
         kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
         st.markdown("---")
 
@@ -1347,7 +1340,7 @@ elif role == "admin":
             final_exp_table.columns = ['التاريخ', 'اليوم', 'الوقت', 'الجهة / الفرع', 'المبلغ (ج.م)', 'الوصف', 'المسؤول']
             st.dataframe(final_exp_table, use_container_width=True, hide_index=True)
 
-        # ----------------- الرسوم البيانية الأربعة بنظافة تامة -----------------
+        # ----------------- الرسوم البيانية -----------------
         st.markdown("---")
         st.subheader("📈 التحليلات والرسوم البيانية")
 
