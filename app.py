@@ -1249,7 +1249,7 @@ elif role == "admin":
         st.markdown("#### 💵 حركة السيولة والفلوس فين؟")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
         kpi5.metric("🏦 الكاش المتبقي بالخزينة (معاك)", f"{safe_cash:,.0f} ج.م", delta="في يدك الآن")
-        kpi6.metric("⏳ فلوس معلقة برة (ذمم)", f"{uncollected_cash:,.0f} ج.م", delta="عهدة السبت مع الموظفين", delta_color="off")
+        kpi6.metric("⏳ فلوس معلقة برة (ذمم)", f"{uncollected_cash:,.0f} ج.م", delta="عهدة الموظفين", delta_color="off")
         kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات الشركاء", delta_color="off")
         kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
         st.markdown("---")
