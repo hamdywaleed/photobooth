@@ -273,14 +273,7 @@ def init_db():
                 VALUES (:ts, 'restock_ink', 3, 'رصيد حبر افتتاحي (علبة ونصف = 3 مليات)', 'Warehouse_Ink')
             """), {"ts": get_egypt_now_str()})
 
-        # تسوية المعاملات التاريخية كمحصلة ما عدا مبيعات السبت 5-9 المعلقة (340 ج فرع 9A و 1330 ج فرع Heaven)
-        conn.execute(text("UPDATE transactions SET is_collected = 1"))
-        conn.execute(text("""
-            UPDATE transactions 
-            SET is_collected = 0 
-            WHERE timestamp >= '2026-09-05 05:00:00' 
-              AND branch IN ('9A', 'Heaven')
-        """))
+
 
     with engine.begin() as conn:
         conn.execute(text("""
