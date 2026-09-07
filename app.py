@@ -234,9 +234,9 @@ def init_db():
         conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS branch_settings (
                 branch TEXT PRIMARY KEY,
-                rent REAL DEFAULT.0,
-                salary REAL DEFAULT.0,
-                bills REAL DEFAULT.0,
+                rent REAL DEFAULT 0.0,
+                salary REAL DEFAULT 0.0,
+                bills REAL DEFAULT 0.0,
                 cost_per_print REAL DEFAULT 1.1,
                 updated_at TEXT
             )
@@ -301,6 +301,33 @@ def update_branch_settings(branch_name: str, rent: float, salary: float, bills: 
             ON CONFLICT (branch) DO UPDATE 
             SET rent = :r, salary = :s, bills = :bills, cost_per_print = :c, updated_at = :ts
         """), {"b": branch_name, "r": rent, "s": salary, "bills": bills, "c": cost_per_print, "ts": now_str})
+
+# ----------------- LEAVES HELPERS (تمت إضافتها لمنع الخطأ) -----------------
+def check_and_add_monthly_allowance():
+    current_month_str = get_egypt_now().strftime("%Y-%m")
+    with engine.begin() as conn:
+        for b in ["Heaven", "9A"]:
+            row = conn.execute(
+                text("SELECT id FROM employee_leaves WHERE branch = :branch AND action_type = 'monthly_allowance' AND notes LIKE :month_pattern"),
+                {"branch": b, "month_pattern": f"%{current_month_str}%"}
+            ).fetchone()
+            if not row:
+                conn.execute(text("""
+                    INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
+                    VALUES (:ts, :branch, 'monthly_allowance', 4, :notes)
+                """), {"ts": get_egypt_now_str(), "branch": b, "notes": f"رصيد إجازات شهر {current_month_str}"})
+
+def get_leave_balance(branch_name: str):
+    with engine.connect() as conn:
+        res = conn.execute(text("SELECT COALESCE(SUM(days_count), 0) FROM employee_leaves WHERE branch = :b"), {"b": branch_name}).fetchone()
+        return res[0] if res else 0
+
+def record_leave(branch_name: str, notes: str = "إجازة اعتيادية"):
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
+            VALUES (:ts, :b, 'leave_taken', -1, :notes)
+        """), {"ts": get_egypt_now_str(), "b": branch_name, "notes": notes})
 
 def get_current_stock(target: str):
     with engine.connect() as conn:
@@ -549,7 +576,6 @@ def get_current_safe_balance():
 
 # ----------------- STOCK ALERT HELPER -----------------
 def render_stock_alert(stock_count: int, branch_name: str = ""):
-    """ترجع كارت تنبيه ملون بناءً على رصيد الورق المطلوب"""
     prefix = f"فرع {branch_name}: " if branch_name else "المخزن العام: "
     if stock_count < 200:
         st.markdown(f'<div class="alert-card-danger">🚨 تنبيه عاجل ({prefix}): رصيد الورق منخفض جداً ({stock_count} ورقة)! أقل من 200 ورقة.</div>', unsafe_allow_html=True)
@@ -730,7 +756,7 @@ if role == "employee":
         st.button("🚪 خروج", on_click=logout, use_container_width=True)
     st.markdown("---")
 
-    # عرض تنبيه الورق للموظف في شاشته الرئيسية
+    # عرض تنبيه الورق في شاشة الموظف
     render_stock_alert(current_stock, branch)
     st.markdown("---")
 
@@ -917,7 +943,7 @@ elif role == "admin":
         ink_heaven_refills = get_ink_refills("Heaven")
         ink_9a_refills = get_ink_refills("9A")
 
-        # تنبيهات الورق للأدمن في قسم المخزن
+        # تنبيهات الورق في قسم المخزن للأدمن
         render_stock_alert(int(warehouse_sheets), "المخزن العام")
         render_stock_alert(stock_9a, "9A")
         render_stock_alert(stock_heaven, "Heaven")
@@ -1407,7 +1433,6 @@ elif role == "admin":
 
         # ----------------- تصدير الملفات عند الطلب فقط (سريع وخفيف) -----------------
         st.markdown("---")
-        st.expander("📥 النسخ الاحتياطي وتصدير البيانات (إكسيل / CSV)", expanded=False)
         with st.expander("📥 النسخ الاحتياطي وتصدير البيانات (إكسيل / CSV)", expanded=False):
             st.caption("يتم تجهيز الملفات فور ضغطك على الزر فقط:")
             col_b1, col_b2 = st.columns(2)
