@@ -474,7 +474,6 @@ def record_expense(branch_name: str, amount: float, description: str, created_by
             VALUES (:day_id, :ts, :date, :b, :amount, :desc, :user, :cat, :p_from)
         """), {"day_id": day_id, "ts": now_str, "date": today_str, "b": branch_name, "amount": amount, "desc": description, "user": created_by, "cat": category, "p_from": paid_from})
         
-        # لو المصروف مدفوع من الخزينة مباشرة يخصم منها فوراً
         if paid_from == "safe":
             conn.execute(text("""
                 INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
@@ -495,7 +494,6 @@ def delete_expense(exp_id: int, branch_name: str = None):
                 VALUES (:ts, :b, 'حذف مصروف', 'expense', :exp_id, :details)
             """), {"ts": now_str, "b": exp["branch"], "exp_id": exp_id, "details": f"حذف مصروف #{exp_id} بقيمة {exp['amount']} ج.م ({exp['description']})"})
             
-            # إذا كان مدفوعاً من الخزينة نعيد المبلغ إليها
             if exp.get("paid_from") == "safe":
                 conn.execute(text("""
                     INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
@@ -530,7 +528,7 @@ def update_expense(exp_id: int, new_amount: float, new_desc: str, branch_name: s
             return True
     return False
 
-# ----------------- SAFE & CUSTODY (خزينة وتصفية العهدة بدون افتراضات) -----------------
+# ----------------- SAFE & CUSTODY -----------------
 def record_safe_deposit(amount: float, notes: str = "إيداع كاش"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
@@ -557,7 +555,6 @@ def settle_drawer_custody(branch_name: str, amount_to_collect: float):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
     with engine.begin() as conn:
-        # تسوية نثريات الدرج الحالية
         unsettled_exp = conn.execute(text("""
             SELECT COALESCE(SUM(amount), 0) FROM expenses 
             WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
@@ -569,7 +566,6 @@ def settle_drawer_custody(branch_name: str, amount_to_collect: float):
             WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
         """), {"b": branch_name})
 
-        # إجمالي ما يتم تسويته من المبيعات
         sales_needed = amount_to_collect + unsettled_exp
 
         uncoll = conn.execute(text("""
@@ -588,7 +584,6 @@ def settle_drawer_custody(branch_name: str, amount_to_collect: float):
                 rem = 0
                 break
 
-        # دخول المبلغ المستلم مباشرة إلى الخزينة
         if amount_to_collect > 0:
             conn.execute(text("""
                 INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
@@ -600,7 +595,7 @@ def get_current_safe_balance():
         res = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM safe_transactions")).fetchone()
         return float(res[0]) if res else 0.0
 
-# ----------------- EVENTS HELPERS WITH CASCADING -----------------
+# ----------------- EVENTS HELPERS -----------------
 def create_event(event_date: str, client_name: str, location: str, device: str, hours: int, start_time: str, end_time: str, total_amount: float, deposit_paid: float, notes: str):
     now_str = get_egypt_now_str()
     remaining = total_amount - deposit_paid
@@ -631,7 +626,6 @@ def create_event(event_date: str, client_name: str, location: str, device: str, 
 
         if deposit_paid > 0:
             d_id = get_or_create_day_id(event_date)
-            # العربون يدخل مباشرة للخزينة
             conn.execute(text("""
                 INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected, event_id)
                 VALUES (:day_id, :ts, 0, :amount, 'Events', 1, :ev_id)
@@ -656,7 +650,6 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
             profit = total_rev - total_exp
             d_id = get_or_create_day_id(event_date)
             
-            # باقي المبلغ المستلم يدخل الخزينة مباشرة
             if rem > 0:
                 conn.execute(text("""
                     INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected, event_id)
@@ -667,14 +660,12 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
                     VALUES (:ts, :date, 'event_settle', :amount, 'باقي إيفنت', :notes)
                 """), {"ts": now_str, "date": event_date, "amount": rem, "notes": f"تسليم باقي إيفنت #{event_id} ({ev['client_name']})"})
             
-            # خصم الورق المستهلك من عهدة الفرع
             if prints_count > 0 and from_branch:
                 conn.execute(text("""
                     INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
                     VALUES (:ts, 'consumption', :qty, :notes, :branch)
                 """), {"ts": now_str, "qty": -prints_count, "notes": f"استهلاك ورق إيفنت #{event_id}", "branch": from_branch})
 
-            # تسجيل مصاريف الإيفنت وخصمها من الخزينة
             if total_exp > 0:
                 desc = f"مصروف إيفنت #{event_id} ({ev['client_name']}): ورق={paper_cost:,.0f}ج، مواصلات={transport_cost:,.0f}ج، موظف={worker_cost:,.0f}ج"
                 conn.execute(text("""
@@ -699,14 +690,12 @@ def delete_event(event_id: int):
     with engine.begin() as conn:
         ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
         if ev:
-            # استرجاع الورق المستهلك
             if ev.get("prints_used", 0) > 0 and ev.get("device"):
                 conn.execute(text("""
                     INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
                     VALUES (:ts, 'restock', :qty, :notes, :b)
                 """), {"ts": now_str, "qty": ev["prints_used"], "notes": f"استرجاع ورق لحذف إيفنت #{event_id}", "b": ev["device"]})
             
-            # تسوية معاملات الخزينة المرتبطة بالإيفنت
             conn.execute(text("DELETE FROM safe_transactions WHERE notes LIKE :pattern"), {"pattern": f"%إيفنت #{event_id}%"})
             conn.execute(text("DELETE FROM expenses WHERE event_id = :id"), {"id": event_id})
             conn.execute(text("DELETE FROM transactions WHERE event_id = :id"), {"id": event_id})
@@ -991,12 +980,18 @@ elif role == "admin":
             with st.expander("📄 تحويل ورق للفرع (بالورقة)", expanded=True):
                 with st.form("transfer_stock_form", clear_on_submit=True):
                     target_b = st.selectbox("الفرع المحول إليه:", ["9A", "Heaven"], key="t_b_paper")
-                    trans_sheets = st.number_input("عدد الورق المحول:", min_value=1, max_value=max(int(warehouse_sheets), 1), value=100, step=50)
+                    
+                    max_avail_sheets = max(int(warehouse_sheets), 1)
+                    default_transfer = min(100, max_avail_sheets)
+                    
+                    trans_sheets = st.number_input("عدد الورق المحول:", min_value=1, max_value=max_avail_sheets, value=default_transfer, step=min(50, max_avail_sheets))
                     trans_notes = st.text_input("ملاحظات التحويل:", placeholder="تسليم شيفت...")
                     if st.form_submit_button("🚚 تحويل الورق فوراً", use_container_width=True):
                         if warehouse_sheets >= trans_sheets:
                             transfer_stock_to_branch(target_b, int(trans_sheets), trans_notes)
                             st.rerun()
+                        else:
+                            st.error("⚠️ رصيد المخزن الرئيسي غير كافٍ!")
 
             with st.expander("🖋️ تزويد الفرع بحبر (بالملوة)"):
                 with st.form("transfer_ink_form", clear_on_submit=True):
@@ -1124,6 +1119,7 @@ elif role == "admin":
 
     # ================= 2.D الفروع والتحليل المالي =================
     else:
+        # --- تحسين السرعة: سحب كل البيانات في دفعة واحدة (Batch Query) ---
         with engine.connect() as conn:
             all_tx_raw = pd.read_sql_query(text("SELECT t.*, d.date FROM transactions t JOIN days d ON t.day_id = d.id ORDER BY t.timestamp ASC"), conn)
             all_exp_raw = pd.read_sql_query(text("SELECT e.*, d.date as operational_date FROM expenses e JOIN days d ON e.day_id = d.id ORDER BY e.timestamp ASC"), conn)
@@ -1144,6 +1140,7 @@ elif role == "admin":
         with top_f2:
             date_range = st.date_input("📅 الفترة الزمنية:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
 
+        # --- تحسين السرعة: فلترة فورية بالـ Pandas بدون اتصالات متكررة ---
         if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
             start_dt, end_dt = date_range
             mask_tx = (pd.to_datetime(all_tx_raw['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_raw['date']).dt.date <= end_dt) if not all_tx_raw.empty else pd.Series(dtype=bool)
@@ -1165,7 +1162,6 @@ elif role == "admin":
 
         total_drawings = all_drawings['amount'].sum() if not all_drawings.empty else 0.0
 
-        # حساب تكلفة الورق حسب الفرع
         if selected_branch in ["9A", "Heaven"]:
             unit_cost = float(get_branch_settings(selected_branch).get("cost_per_print", 1.1))
             cogs_total = total_prints_all * unit_cost
@@ -1177,16 +1173,13 @@ elif role == "admin":
             p_ev = tx_subset[tx_subset['branch'] == 'Events']['prints_count'].sum() if not tx_subset.empty else 0
             cogs_total = (p_9a * cost_9a) + (p_h * cost_h) + (p_ev * 1.1)
 
-        # صافي الأرباح المحققة بعد خصم الورق والمصروفات
         net_profit = total_rev_all - cogs_total - paid_opex_total
 
-        # العهدة الصافية الحالية في أدراج الفروع
         with engine.connect() as conn:
             uncoll_sales = conn.execute(text("SELECT COALESCE(SUM(amount_paid), 0) FROM transactions WHERE is_collected = 0")).fetchone()[0]
             unsettled_expenses = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE category = 'نثريات وتشغيل' AND paid_from = 'drawer'")).fetchone()[0]
         net_uncollected_custody = max(float(uncoll_sales) - float(unsettled_expenses), 0.0)
 
-        # الكاش الحقيقي بالخزينة
         safe_cash = get_current_safe_balance()
 
         waste_count = get_waste_count(selected_branch)
