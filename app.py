@@ -164,7 +164,7 @@ except Exception:
     IS_POSTGRES = False
 
 engine = create_engine(DB_URL, pool_pre_ping=True)
-
+@st.cache_resource
 def init_db():
     pk_def = "id SERIAL PRIMARY KEY" if IS_POSTGRES else "id INTEGER PRIMARY KEY AUTOINCREMENT"
     with engine.begin() as conn:
@@ -785,8 +785,8 @@ if role == "employee":
     st.title(f"📸 فرع {branch} - المبيعات السريعة")
 
     st.subheader("⚡ العمليات السريعة")
-    if branch == "Heaven":
-        btn_col1, btn_col2 = st.columns(2)
+if branch == "Heaven":
+        btn_col1, btn_col2, btn_col3 = st.columns(3)
         with btn_col1:
             if st.button("🖼️ كارت فردي\n(30 ج - 1 ورقة)", use_container_width=True):
                 if current_stock < 1:
@@ -802,6 +802,14 @@ if role == "employee":
                 else:
                     record_transaction(branch, 2, 50.0)
                     st.success("✅ تم تسجيل البيع!")
+                    st.rerun()
+        with btn_col3:
+            if st.button("📸 عرض 5 كروت\n(100 ج - 5 ورقات)", use_container_width=True):
+                if current_stock < 5:
+                    st.error("⚠️ رصيد الورق غير كافٍ (أقل من 5 ورقات)!")
+                else:
+                    record_transaction(branch, 5, 100.0)
+                    st.success("✅ تم تسجيل بيع 5 كروت بـ 100 ج!")
                     st.rerun()
     else:
         btn_col1, btn_col2, btn_col3 = st.columns(3)
