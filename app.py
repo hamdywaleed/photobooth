@@ -785,7 +785,7 @@ if role == "employee":
     st.title(f"📸 فرع {branch} - المبيعات السريعة")
 
     st.subheader("⚡ العمليات السريعة")
-if branch == "Heaven":
+    if branch == "Heaven":
         btn_col1, btn_col2, btn_col3 = st.columns(3)
         with btn_col1:
             if st.button("🖼️ كارت فردي\n(30 ج - 1 ورقة)", use_container_width=True):
