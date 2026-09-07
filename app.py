@@ -214,7 +214,12 @@ def init_db():
                 type TEXT NOT NULL, amount REAL NOT NULL, source_destination TEXT NOT NULL, notes TEXT
             )
         """))
-
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS cash_drawings (
+                {pk_def}, timestamp TEXT NOT NULL, date TEXT NOT NULL,
+                amount REAL NOT NULL, receiver TEXT NOT NULL, notes TEXT
+            )
+        """))
         # الفهارس لضمان السرعة الفورية
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tx_search ON transactions(branch, is_collected, day_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_exp_search ON expenses(branch, category, day_id)"))
