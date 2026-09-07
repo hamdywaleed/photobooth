@@ -29,7 +29,7 @@ def format_arabic_time(t_str):
         return ""
     return str(t_str).replace("AM", "ص").replace("PM", "م").replace("am", "ص").replace("pm", "م")
 
-# ----------------- APP CONFIG & SAFE ARABIC STYLING -----------------
+# ----------------- APP CONFIG & CLEAN ARABIC STYLING -----------------
 st.set_page_config(page_title="Photobooth Management System", page_icon="📸", layout="wide")
 
 st.markdown("""
@@ -151,7 +151,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ----------------- DB SETUP & AUTO-MIGRATION -----------------
+# ----------------- DB SETUP -----------------
 try:
     if "DATABASE_URL" in st.secrets:
         DB_URL = st.secrets["DATABASE_URL"]
@@ -173,7 +173,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS transactions (
                 {pk_def}, day_id INTEGER NOT NULL, timestamp TEXT NOT NULL,
                 prints_count INTEGER NOT NULL, amount_paid REAL NOT NULL,
-                branch TEXT NOT NULL, is_collected INTEGER DEFAULT 1,
+                branch TEXT NOT NULL, is_collected INTEGER DEFAULT 1, event_id INTEGER,
                 FOREIGN KEY (day_id) REFERENCES days(id)
             )
         """))
@@ -200,7 +200,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS expenses (
                 {pk_def}, day_id INTEGER, timestamp TEXT NOT NULL, date TEXT NOT NULL,
                 branch TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL,
-                created_by TEXT NOT NULL, category TEXT DEFAULT 'نثريات وتشغيل',
+                created_by TEXT NOT NULL, category TEXT DEFAULT 'نثريات وتشغيل', event_id INTEGER,
                 FOREIGN KEY (day_id) REFERENCES days(id)
             )
         """))
@@ -233,12 +233,8 @@ def init_db():
         """))
 
     alters = [
-        "ALTER TABLE transactions ADD COLUMN is_collected INTEGER DEFAULT 1",
-        "ALTER TABLE expenses ADD COLUMN day_id INTEGER",
-        "ALTER TABLE expenses ADD COLUMN category TEXT DEFAULT 'نثريات وتشغيل'",
-        "ALTER TABLE audit_logs ADD COLUMN entity_type TEXT DEFAULT 'transaction'",
-        "ALTER TABLE audit_logs ADD COLUMN entity_id INTEGER",
-        "UPDATE audit_logs SET entity_id = transaction_id WHERE entity_id IS NULL AND transaction_id IS NOT NULL"
+        "ALTER TABLE transactions ADD COLUMN event_id INTEGER",
+        "ALTER TABLE expenses ADD COLUMN event_id INTEGER"
     ]
     for q in alters:
         try:
@@ -246,34 +242,6 @@ def init_db():
                 conn.execute(text(q))
         except Exception:
             pass
-
-    try:
-        with engine.begin() as conn:
-            if IS_POSTGRES:
-                conn.execute(text("INSERT INTO days (date) SELECT DISTINCT date FROM expenses WHERE date IS NOT NULL AND date != '' ON CONFLICT (date) DO NOTHING"))
-                conn.execute(text("UPDATE expenses e SET day_id = d.id FROM days d WHERE e.date = d.date AND e.day_id IS NULL"))
-            else:
-                conn.execute(text("INSERT OR IGNORE INTO days (date) SELECT DISTINCT date FROM expenses WHERE date IS NOT NULL AND date != ''"))
-                conn.execute(text("UPDATE expenses SET day_id = (SELECT id FROM days WHERE days.date = expenses.date) WHERE day_id IS NULL"))
-    except Exception:
-        pass
-
-    with engine.begin() as conn:
-        conn.execute(text("UPDATE expenses SET category = 'توزيعات أرباح' WHERE description LIKE '%توزيع ارباح%'"))
-
-    with engine.begin() as conn:
-        check_init = conn.execute(text("SELECT COUNT(*) FROM inventory WHERE branch = 'Warehouse'")).fetchone()[0]
-        if check_init == 0:
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'restock', 7400, 'رصيد مخزن افتتاحي (74 باكتة)', 'Warehouse')
-            """), {"ts": get_egypt_now_str()})
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'restock_ink', 3, 'رصيد حبر افتتاحي (علبة ونصف = 3 مليات)', 'Warehouse_Ink')
-            """), {"ts": get_egypt_now_str()})
-
-
 
     with engine.begin() as conn:
         conn.execute(text("""
@@ -508,15 +476,55 @@ def update_transaction(tx_id: int, branch_name: str, new_prints: int, new_amount
             return True
     return False
 
-def mark_day_collected(day_date: str, branch_name: str):
+# ----------------- FLEXIBLE CUSTODY SETTLEMENT (توريد العهدة الصافية والجزئية) -----------------
+def settle_partial_drawer(branch_name: str, amount_received: float):
+    now_str = get_egypt_now_str()
+    today_str = get_egypt_today_str()
+    d_id = get_or_create_day_id(today_str)
+    
     with engine.begin() as conn:
+        # جلب المصروفات غير المسواة
+        unsettled_exp = conn.execute(text("""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM expenses
+            WHERE branch = :b AND category = 'نثريات وتشغيل'
+        """), {"b": branch_name}).fetchone()[0]
+        unsettled_exp = float(unsettled_exp)
+
+        # تسوية المصروفات المعلقة
         conn.execute(text("""
-            UPDATE transactions
-            SET is_collected = 1
-            WHERE day_id = (SELECT id FROM days WHERE date = :d)
-              AND branch = :b
-              AND is_collected = 0
-        """), {"d": day_date, "b": branch_name})
+            UPDATE expenses 
+            SET category = 'نثريات مسواة' 
+            WHERE branch = :b AND category = 'نثريات وتشغيل'
+        """), {"b": branch_name})
+
+        # إجمالي المبيعات التي يجب خصمها لتغطية النثريات المدفوعة + المبلغ المستلم كاش
+        sales_to_settle = amount_received + unsettled_exp
+
+        uncoll_tx = conn.execute(text("""
+            SELECT id, amount_paid FROM transactions 
+            WHERE branch = :b AND is_collected = 0 
+            ORDER BY id ASC
+        """), {"b": branch_name}).mappings().fetchall()
+
+        rem = sales_to_settle
+        for tx in uncoll_tx:
+            t_id = tx["id"]
+            t_amt = float(tx["amount_paid"])
+            if rem >= t_amt:
+                conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE id = :id"), {"id": t_id})
+                rem -= t_amt
+            elif rem > 0:
+                diff = t_amt - rem
+                conn.execute(text("UPDATE transactions SET amount_paid = :paid, is_collected = 1 WHERE id = :id"), {
+                    "paid": rem, "id": t_id
+                })
+                conn.execute(text("""
+                    INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
+                    VALUES (:day_id, :ts, 0, :rem, :b, 0)
+                """), {"day_id": d_id, "ts": now_str, "rem": diff, "b": branch_name})
+                rem = 0
+                break
 
 def record_cash_drawing(amount: float, receiver: str, notes: str):
     now_str = get_egypt_now_str()
@@ -572,27 +580,42 @@ def update_expense(exp_id: int, new_amount: float, new_desc: str, branch_name: s
             return True
     return False
 
-# ----------------- EVENTS HELPERS -----------------
+# ----------------- EVENTS HELPERS WITH CASCADING INTEGRITY -----------------
 def create_event(event_date: str, client_name: str, location: str, device: str, hours: int, start_time: str, end_time: str, total_amount: float, deposit_paid: float, notes: str):
     now_str = get_egypt_now_str()
     remaining = total_amount - deposit_paid
     status = "قيد الانتظار"
     with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO events (created_at, event_date, client_name, location, device, hours, start_time, end_time, total_amount, deposit_paid, remaining_amount, status, notes)
-            VALUES (:created_at, :event_date, :client_name, :location, :device, :hours, :start_time, :end_time, :total_amount, :deposit_paid, :remaining_amount, :status, :notes)
-        """), {
-            "created_at": now_str, "event_date": event_date, "client_name": client_name,
-            "location": location, "device": device, "hours": hours, "start_time": start_time,
-            "end_time": end_time, "total_amount": total_amount, "deposit_paid": deposit_paid,
-            "remaining_amount": remaining, "status": status, "notes": notes
-        })
+        if IS_POSTGRES:
+            ev_res = conn.execute(text("""
+                INSERT INTO events (created_at, event_date, client_name, location, device, hours, start_time, end_time, total_amount, deposit_paid, remaining_amount, status, notes)
+                VALUES (:created_at, :event_date, :client_name, :location, :device, :hours, :start_time, :end_time, :total_amount, :deposit_paid, :remaining_amount, :status, :notes)
+                RETURNING id
+            """), {
+                "created_at": now_str, "event_date": event_date, "client_name": client_name,
+                "location": location, "device": device, "hours": hours, "start_time": start_time,
+                "end_time": end_time, "total_amount": total_amount, "deposit_paid": deposit_paid,
+                "remaining_amount": remaining, "status": status, "notes": notes
+            }).fetchone()
+            ev_id = ev_res[0]
+        else:
+            conn.execute(text("""
+                INSERT INTO events (created_at, event_date, client_name, location, device, hours, start_time, end_time, total_amount, deposit_paid, remaining_amount, status, notes)
+                VALUES (:created_at, :event_date, :client_name, :location, :device, :hours, :start_time, :end_time, :total_amount, :deposit_paid, :remaining_amount, :status, :notes)
+            """), {
+                "created_at": now_str, "event_date": event_date, "client_name": client_name,
+                "location": location, "device": device, "hours": hours, "start_time": start_time,
+                "end_time": end_time, "total_amount": total_amount, "deposit_paid": deposit_paid,
+                "remaining_amount": remaining, "status": status, "notes": notes
+            })
+            ev_id = conn.execute(text("SELECT last_insert_rowid()")).fetchone()[0]
+
         if deposit_paid > 0:
             d_id = get_or_create_day_id(event_date)
             conn.execute(text("""
-                INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
-                VALUES (:day_id, :ts, 0, :amount, 'Events', 0)
-            """), {"day_id": d_id, "ts": now_str, "amount": deposit_paid})
+                INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected, event_id)
+                VALUES (:day_id, :ts, 0, :amount, 'Events', 0, :ev_id)
+            """), {"day_id": d_id, "ts": now_str, "amount": deposit_paid, "ev_id": ev_id})
 
 def complete_event_settlement(event_id: int, from_branch: str, prints_count: int, transport_cost: float, worker_cost: float):
     now_str = get_egypt_now_str()
@@ -603,17 +626,17 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
     with engine.begin() as conn:
         ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
         if ev:
-            rem = ev["remaining_amount"]
+            rem = float(ev["remaining_amount"])
             event_date = ev["event_date"]
-            total_rev = ev["total_amount"]
+            total_rev = float(ev["total_amount"])
             profit = total_rev - total_exp
             d_id = get_or_create_day_id(event_date)
             
             if rem > 0:
                 conn.execute(text("""
-                    INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
-                    VALUES (:day_id, :ts, :prints, :amount, 'Events', 1)
-                """), {"day_id": d_id, "ts": now_str, "prints": prints_count, "amount": rem})
+                    INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected, event_id)
+                    VALUES (:day_id, :ts, :prints, :amount, 'Events', 1, :ev_id)
+                """), {"day_id": d_id, "ts": now_str, "prints": prints_count, "amount": rem, "ev_id": event_id})
             
             if prints_count > 0 and from_branch:
                 conn.execute(text("""
@@ -629,9 +652,9 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
             if total_exp > 0:
                 desc = f"مصروف إيفنت #{event_id} ({ev['client_name']}): ورق={paper_cost:,.0f}ج من {from_branch}، مواصلات={transport_cost:,.0f}ج، موظف={worker_cost:,.0f}ج"
                 conn.execute(text("""
-                    INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category)
-                    VALUES (:day_id, :ts, :date, 'Events', :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات')
-                """), {"day_id": d_id, "ts": now_str, "date": event_date, "amount": total_exp, "desc": desc})
+                    INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, event_id)
+                    VALUES (:day_id, :ts, :date, 'Events', :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات', :ev_id)
+                """), {"day_id": d_id, "ts": now_str, "date": event_date, "amount": total_exp, "desc": desc, "ev_id": event_id})
 
             conn.execute(text("""
                 UPDATE events
@@ -646,18 +669,24 @@ def delete_event(event_id: int):
     with engine.begin() as conn:
         ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
         if ev:
+            # 1. استرجاع الورق المستهلك لرصيد الفرع
             if ev.get("prints_used", 0) > 0 and ev.get("device"):
                 conn.execute(text("""
                     INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
                     VALUES (:ts, 'restock', :qty, :notes, :b)
                 """), {"ts": now_str, "qty": ev["prints_used"], "notes": f"استرجاع ورق لحذف إيفنت #{event_id}", "b": ev["device"]})
-            conn.execute(text("DELETE FROM expenses WHERE description LIKE :pattern"), {"pattern": f"%إيفنت #{event_id}%"})
+            
+            # 2. حذف مصاريف الإيفنت برقم event_id وبالمطابقة النصية
+            conn.execute(text("DELETE FROM expenses WHERE event_id = :id OR description LIKE :pattern"), {"id": event_id, "pattern": f"%إيفنت #{event_id}%"})
+            
+            # 3. حذف معاملات الإيفنت من المبيعات
             conn.execute(text("""
                 DELETE FROM transactions 
-                WHERE branch = 'Events' 
-                  AND day_id = (SELECT id FROM days WHERE date = :d) 
-                  AND amount_paid IN (:dep, :tot, :rem)
-            """), {"d": ev["event_date"], "dep": ev["deposit_paid"], "tot": ev["total_amount"], "rem": ev["remaining_amount"]})
+                WHERE event_id = :id 
+                   OR (branch = 'Events' AND day_id = (SELECT id FROM days WHERE date = :d) AND amount_paid IN (:dep, :tot, :rem))
+            """), {"id": event_id, "d": ev["event_date"], "dep": ev["deposit_paid"], "tot": ev["total_amount"], "rem": ev["remaining_amount"]})
+            
+            # 4. حذف الإيفنت نفسه
             conn.execute(text("DELETE FROM events WHERE id = :id"), {"id": event_id})
             return True
     return False
@@ -1064,7 +1093,7 @@ elif role == "admin":
                         else:
                             st.error("رصيد الحبر بالمخزن العام لا يكفي!")
 
-            with st.expander("✂️ سحب / تعديل رصيد ورق من فرع مباشرة (بالورقة)"):
+            with st.expander("✂️ سحب / تسوية رصيد ورق من فرع مباشرة (بالورقة)"):
                 with st.form("manual_adjust_stock_form", clear_on_submit=True):
                     adj_b = st.selectbox("اختر الفرع:", ["9A", "Heaven"], key="adj_b")
                     adj_type = st.radio("نوع التعديل:", ["خصم", "إضافة"], horizontal=True)
@@ -1248,7 +1277,7 @@ elif role == "admin":
         total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
         total_cust_all = len(tx_subset)
         
-        # المصروفات النثرية والتشغيلية المسجلة فعلياً
+        # المصروفات التشغيلية والنثرية الفعلية
         opex_df = exp_subset[~exp_subset['category'].isin(['مشتريات مخزن وأصول', 'توزيعات أرباح'])] if not exp_subset.empty else pd.DataFrame()
         paid_opex_total = opex_df['amount'].sum() if not opex_df.empty else 0.0
 
@@ -1257,17 +1286,23 @@ elif role == "admin":
         drawings_exp_sum = drawings_df['amount'].sum() if not drawings_df.empty else 0.0
         total_drawings = all_drawings['amount'].sum() + drawings_exp_sum
 
-        # تكلفة الورق المباشرة (COGS) بناءً على إعدادات الفرع
+        # تكلفة الورق المباشرة (COGS)
         cfg_cost = float(get_branch_settings(selected_branch if selected_branch in ["9A", "Heaven"] else "9A").get("cost_per_print", 1.1))
         cogs_total = total_prints_all * cfg_cost
 
-        # صافي الأرباح المحققة (المبيعات - تكاليف التشغيل المدفوعة)
+        # صافي الأرباح المحققة
         net_profit = total_rev_all - paid_opex_total
 
-        # الكاش المعلق برة (الصافي من كل شيفت)
+        # الكاش المعلق برة بالصافي
         uncollected_tx = tx_subset[tx_subset['is_collected'] == 0]
-        uncollected_cash_raw = uncollected_tx['amount_paid'].sum() if not uncollected_tx.empty else 0.0
-        collected_cash = total_rev_all - uncollected_cash_raw
+        uncollected_sales_raw = uncollected_tx['amount_paid'].sum() if not uncollected_tx.empty else 0.0
+        
+        # نثريات غير مسواة
+        unsettled_exp_df = exp_subset[exp_subset['category'] == 'نثريات وتشغيل'] if not exp_subset.empty else pd.DataFrame()
+        unsettled_exp_sum = unsettled_exp_df['amount'].sum() if not unsettled_exp_df.empty else 0.0
+        
+        net_uncollected_custody = max(uncollected_sales_raw - unsettled_exp_sum, 0.0)
+        collected_cash = total_rev_all - uncollected_sales_raw
         safe_cash = max(collected_cash - paid_opex_total - total_drawings, 0.0)
 
         waste_count = get_waste_count(selected_branch)
@@ -1283,54 +1318,47 @@ elif role == "admin":
 
         st.markdown("#### 💵 حركة السيولة والفلوس فين؟")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
-        kpi5.metric("🏦 الكاش بالخزينة (في يدك)", f"{safe_cash:,.0f} ج.م", delta="كاش متاح")
-        kpi6.metric("⏳ عهدة معلقة مع الموظفين", f"{uncollected_cash_raw:,.0f} ج.م", delta="لم يتم توريدها", delta_color="off")
+        kpi5.metric("🏦 الكاش بالخزينة (معاك)", f"{safe_cash:,.0f} ج.م", delta="كاش متاح في يدك")
+        kpi6.metric("⏳ عهدة معلقة مع الموظفين (صافي)", f"{net_uncollected_custody:,.0f} ج.م", delta=f"المبيعات {uncollected_sales_raw:,.0f} - نثريات {unsettled_exp_sum:,.0f}", delta_color="off")
         kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات ملاك", delta_color="off")
         kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
         st.markdown("---")
 
-        # ----------------- قسم تسليم وتوريد العهدة الصافية بالأيام -----------------
-        st.markdown("### 📥 جدول تسليم وتوريد عهدة الأيام المعلقة (بالصافي)")
-        st.caption("يعرض الأيام التي لم يتم توريد كاشها بعد مع حساب صافي المطلوب توريده (المبيعات - نثريات الفرع):")
+        # ----------------- قسم تسليم وتوريد العهدة الصافية والجزئية -----------------
+        st.markdown("### 📥 تصفية وتوريد عهدة الفروع (استلام كامل أو جزئي)")
+        st.caption("يمكنك استلام الصافي كاملاً أو تحديد مبلغ جزئي وترك باقي العهدة كفكة في الدرج للشيفت القادم:")
         
-        with engine.connect() as conn:
-            uncoll_days = pd.read_sql_query(text("""
-                SELECT d.date, t.branch, SUM(t.amount_paid) as sales_amount
-                FROM transactions t
-                JOIN days d ON t.day_id = d.id
-                WHERE t.is_collected = 0
-                GROUP BY d.date, t.branch
-                ORDER BY d.date DESC
-            """), conn)
+        b_list = ["9A", "Heaven"] if selected_branch == "الكل" else ([selected_branch] if selected_branch in ["9A", "Heaven"] else [])
+        for b_name in b_list:
+            with engine.connect() as conn:
+                uncoll_s = conn.execute(text("SELECT COALESCE(SUM(amount_paid), 0) FROM transactions WHERE branch = :b AND is_collected = 0"), {"b": b_name}).fetchone()[0]
+                unsettled_e = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE branch = :b AND category = 'نثريات وتشغيل'"), {"b": b_name}).fetchone()[0]
+            uncoll_s = float(uncoll_s)
+            unsettled_e = float(unsettled_e)
+            net_avail = max(uncoll_s - unsettled_e, 0.0)
 
-        if not uncoll_days.empty:
-            for idx, row in uncoll_days.iterrows():
-                d_val = row['date']
-                b_val = row['branch']
-                s_amt = float(row['sales_amount'])
-                
-                # جلب نثريات هذا اليوم لهذا الفرع
-                with engine.connect() as conn:
-                    day_exp_res = conn.execute(text("""
-                        SELECT COALESCE(SUM(amount), 0)
-                        FROM expenses
-                        WHERE date = :d AND branch = :b AND category = 'نثريات وتشغيل'
-                    """), {"d": d_val, "b": b_val}).fetchone()[0]
-                d_exp = float(day_exp_res)
-                net_to_collect = max(s_amt - d_exp, 0.0)
-
-                col_u1, col_u2, col_u3, col_u4, col_u5 = st.columns([2, 2, 2, 2, 2])
-                col_u1.write(f"📅 **يوم: {d_val}**")
-                col_u2.write(f"🏢 فرع: **{b_val}**")
-                col_u3.write(f"المبيعات: **{s_amt:,.0f} ج**")
-                col_u4.write(f"المصروف: **{d_exp:,.0f} ج** | الصافي: **{net_to_collect:,.0f} ج**")
-                with col_u5:
-                    if st.button(f"تأكيد استلام الصافي ({net_to_collect:,.0f} ج)", key=f"btn_coll_{idx}", use_container_width=True):
-                        mark_day_collected(d_val, b_val)
-                        st.success(f"تم توريد كاش يوم {d_val} لفرع {b_val} بالخزينة بنجاح!")
-                        st.rerun()
-        else:
-            st.success("✅ كل المبيعات والعهد السابقة تم توريدها للخزينة بالكامل، لا توجد عهدة معلقة حالياً!")
+            if uncoll_s > 0 or unsettled_e > 0:
+                with st.expander(f"🏢 فرع {b_name} | الصافي المتاح بالدرج: {net_avail:,.0f} ج.م (مبيعات: {uncoll_s:,.0f} ج - نثريات: {unsettled_e:,.0f} ج)", expanded=True):
+                    col_p1, col_p2 = st.columns([3, 2])
+                    with col_p1:
+                        amt_to_take = st.number_input(
+                            f"المبلغ المراد استلامه وتوريده للخزينة من فرع {b_name} (ج.م):",
+                            min_value=0.0,
+                            max_value=float(net_avail),
+                            value=float(net_avail),
+                            step=50.0,
+                            key=f"input_take_{b_name}"
+                        )
+                        diff_rem = net_avail - amt_to_take
+                        if diff_rem > 0:
+                            st.info(f"💡 سيتبقى في درج فرع {b_name} فكة عهدة مستمرة: **{diff_rem:,.0f} ج.م**")
+                    with col_p2:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button(f"تأكيد استلام ({amt_to_take:,.0f} ج) للخزينة", key=f"btn_take_{b_name}", use_container_width=True):
+                            if amt_to_take > 0:
+                                settle_partial_drawer(b_name, amt_to_take)
+                                st.success(f"تم توريد {amt_to_take:,.0f} ج.م إلى الخزينة بنجاح، وتحديث عهدة فرع {b_name}!")
+                                st.rerun()
 
         st.markdown("---")
         with st.expander("💼 تسجيل سحب أرباح للشركاء (Drawings)"):
@@ -1398,7 +1426,7 @@ elif role == "admin":
             else:
                 st.info("لا توجد مصروفات مسجلة اليوم.")
 
-        # ----------------- جدول سلوك العمليات اليومي مع حساب تكلفة التشغيل -----------------
+        # ----------------- جدول سلوك العمليات اليومي مع حساب ربح اليوم -----------------
         st.markdown("---")
         if not tx_subset.empty:
             days_df = tx_subset.groupby('date').agg(
