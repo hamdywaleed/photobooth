@@ -240,7 +240,6 @@ def init_db():
             )
         """))
 
-        # تسريع البحث والاستعلامات
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tx_perf ON transactions(branch, is_collected, day_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_exp_perf ON expenses(branch, category, day_id)"))
 
@@ -278,7 +277,7 @@ def init_db():
 
 init_db()
 
-# ----------------- GENERAL & SETTINGS HELPERS -----------------
+# ----------------- DB HELPERS -----------------
 def get_or_create_day_id(date_str: str) -> int:
     with engine.begin() as conn:
         row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
@@ -309,7 +308,6 @@ def update_branch_settings(branch_name: str, rent: float, salary: float, bills: 
             SET rent = :r, salary = :s, bills = :bills, cost_per_print = :c, updated_at = :ts
         """), {"b": branch_name, "r": rent, "s": salary, "bills": bills, "c": cost_per_print, "ts": now_str})
 
-# ----------------- LEAVES HELPERS -----------------
 def check_and_add_monthly_allowance():
     current_month_str = get_egypt_now().strftime("%Y-%m")
     with engine.begin() as conn:
@@ -336,7 +334,6 @@ def record_leave(branch_name: str, notes: str = "إجازة اعتيادية"):
             VALUES (:ts, :b, 'leave_taken', -1, :notes)
         """), {"ts": get_egypt_now_str(), "b": branch_name, "notes": notes})
 
-# ----------------- INVENTORY & INK HELPERS -----------------
 def get_current_stock(target: str):
     with engine.connect() as conn:
         res = conn.execute(
@@ -446,7 +443,6 @@ def record_free_prints(branch_name: str, prints_count: int, notes: str = "طبا
             VALUES (:ts, 'free', :qty, :notes, :b)
         """), {"ts": now_str, "qty": -prints_count, "notes": notes, "b": branch_name})
 
-# ----------------- TRANSACTIONS HELPERS -----------------
 def record_transaction(branch_name: str, prints_count: int, amount_paid: float):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
@@ -497,7 +493,6 @@ def update_transaction(tx_id: int, branch_name: str, new_prints: int, new_amount
             return True
     return False
 
-# ----------------- CUSTODY SETTLEMENT -----------------
 def settle_partial_drawer(branch_name: str, amount_received: float):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
@@ -553,7 +548,6 @@ def record_cash_drawing(amount: float, receiver: str, notes: str):
             VALUES (:ts, :date, :amount, :rec, :notes)
         """), {"ts": now_str, "date": today_str, "amount": amount, "rec": receiver, "notes": notes})
 
-# ----------------- EXPENSES HELPERS -----------------
 def record_expense(branch_name: str, amount: float, description: str, created_by: str, category: str = "نثريات وتشغيل"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
@@ -598,7 +592,6 @@ def update_expense(exp_id: int, new_amount: float, new_desc: str, branch_name: s
             return True
     return False
 
-# ----------------- EVENTS HELPERS -----------------
 def create_event(event_date: str, client_name: str, location: str, device: str, hours: int, start_time: str, end_time: str, total_amount: float, deposit_paid: float, notes: str):
     now_str = get_egypt_now_str()
     remaining = total_amount - deposit_paid
@@ -1121,12 +1114,35 @@ elif role == "admin":
             all_exp_raw = pd.read_sql_query(text("SELECT e.*, d.date as operational_date FROM expenses e JOIN days d ON e.day_id = d.id ORDER BY e.timestamp ASC"), conn)
             all_drawings = pd.read_sql_query(text("SELECT * FROM cash_drawings ORDER BY timestamp DESC"), conn)
 
-        top_f1, _ = st.columns([1, 2])
+        # حساب المدى الزمني
+        all_dates = []
+        if not all_tx_raw.empty:
+            all_dates.extend(pd.to_datetime(all_tx_raw['date']).dt.date.tolist())
+        if not all_exp_raw.empty:
+            all_dates.extend(pd.to_datetime(all_exp_raw['operational_date']).dt.date.tolist())
+
+        min_date = min(all_dates) if all_dates else date.today()
+        max_date = max(all_dates) if all_dates else date.today()
+
+        top_f1, top_f2 = st.columns([1, 1.5])
         with top_f1:
             selected_branch = st.selectbox("🏢 نطاق التحليل:", ["الكل", "Heaven", "9A", "Events"])
+        with top_f2:
+            date_range = st.date_input("📅 الفترة الزمنية:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
 
-        tx_subset = all_tx_raw if selected_branch == "الكل" else all_tx_raw[all_tx_raw['branch'] == selected_branch]
-        exp_subset = all_exp_raw if selected_branch == "الكل" else (all_exp_raw[all_exp_raw['branch'] == "Events"] if selected_branch == "Events" else all_exp_raw[all_exp_raw['branch'].isin([selected_branch, 'General'])])
+        # فلترة التواريخ
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            start_dt, end_dt = date_range
+            mask_tx = (pd.to_datetime(all_tx_raw['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_raw['date']).dt.date <= end_dt) if not all_tx_raw.empty else pd.Series(dtype=bool)
+            mask_exp = (pd.to_datetime(all_exp_raw['operational_date']).dt.date >= start_dt) & (pd.to_datetime(all_exp_raw['operational_date']).dt.date <= end_dt) if not all_exp_raw.empty else pd.Series(dtype=bool)
+            filtered_tx = all_tx_raw.loc[mask_tx].copy() if not all_tx_raw.empty else pd.DataFrame()
+            filtered_exp = all_exp_raw.loc[mask_exp].copy() if not all_exp_raw.empty else pd.DataFrame()
+        else:
+            filtered_tx = all_tx_raw.copy()
+            filtered_exp = all_exp_raw.copy()
+
+        tx_subset = filtered_tx if selected_branch == "الكل" else filtered_tx[filtered_tx['branch'] == selected_branch]
+        exp_subset = filtered_exp if selected_branch == "الكل" else (filtered_exp[filtered_exp['branch'] == "Events"] if selected_branch == "Events" else filtered_exp[filtered_exp['branch'].isin([selected_branch, 'General'])])
 
         total_rev_all = tx_subset['amount_paid'].sum() if not tx_subset.empty else 0.0
         total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
@@ -1225,6 +1241,42 @@ elif role == "admin":
                         record_expense(ad_branch, float(ad_amount), ad_desc.strip(), "المدير", ad_cat)
                         st.rerun()
 
+        # ----------------- جداول اليوم الحالي (مبيعات ومصروفات اليوم) -----------------
+        st.markdown("---")
+        today_b_str = get_egypt_today_str()
+        st.subheader(f"⚡ مبيعات ومصروفات يوم العمل الحالي ({selected_branch}) - {today_b_str}")
+        
+        c_tod1, c_tod2 = st.columns(2)
+        with c_tod1:
+            st.markdown("##### 🛒 مبيعات اليوم الحالي")
+            with engine.connect() as conn:
+                f_b = "AND t.branch = :branch" if selected_branch != "الكل" else ""
+                p_b = {"date": today_b_str, "branch": selected_branch} if selected_branch != "الكل" else {"date": today_b_str}
+                today_admin_tx = pd.read_sql_query(text(f"""
+                    SELECT t.timestamp, t.branch, t.prints_count, t.amount_paid
+                    FROM transactions t JOIN days d ON t.day_id = d.id
+                    WHERE d.date = :date {f_b} ORDER BY t.timestamp DESC
+                """), conn, params=p_b)
+            if not today_admin_tx.empty:
+                st.dataframe(today_admin_tx.rename(columns={'timestamp': 'الوقت', 'branch': 'الفرع', 'prints_count': 'الورق', 'amount_paid': 'المبلغ (ج.م)'}), use_container_width=True, hide_index=True)
+            else:
+                st.info("لا توجد مبيعات مسجلة اليوم.")
+
+        with c_tod2:
+            st.markdown("##### 💸 مصروفات اليوم الحالي")
+            with engine.connect() as conn:
+                f_e = "AND (e.branch = :branch OR e.branch = 'General')" if selected_branch != "الكل" else ""
+                p_e = {"date": today_b_str, "branch": selected_branch} if selected_branch != "الكل" else {"date": today_b_str}
+                today_admin_exp = pd.read_sql_query(text(f"""
+                    SELECT e.timestamp, e.branch, e.amount, e.description, e.created_by 
+                    FROM expenses e JOIN days d ON e.day_id = d.id
+                    WHERE d.date = :date {f_e} ORDER BY e.timestamp DESC
+                """), conn, params=p_e)
+            if not today_admin_exp.empty:
+                st.dataframe(today_admin_exp.rename(columns={'timestamp': 'الوقت', 'branch': 'الفرع', 'amount': 'المبلغ (ج.م)', 'description': 'الوصف', 'created_by': 'بواسطة'}), use_container_width=True, hide_index=True)
+            else:
+                st.info("لا توجد مصروفات مسجلة اليوم.")
+
         # ----------------- جدول سلوك العمليات والربح اليومي -----------------
         st.markdown("---")
         if not tx_subset.empty:
@@ -1266,7 +1318,7 @@ elif role == "admin":
             display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
             st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-            # الرسوم البيانية
+            # الرسوم البيانية الأربعة بالكامل
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
                 st.markdown("##### 📉 الإيرادات والعمليات خلال الفترة")
@@ -1286,6 +1338,76 @@ elif role == "admin":
                 fig_week.update_traces(hovertemplate="<b>%{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
                 fig_week.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_week, use_container_width=True)
+
+            col_chart3, col_chart4 = st.columns(2)
+            with col_chart3:
+                st.markdown("##### 🔥 ساعات الذروة المالية وحركة الزبائن")
+                hourly = tx_subset.groupby('hour').agg(total_revenue=('amount_paid', 'sum'), total_customers=('id', 'count')).reset_index()
+                hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x:02d}:00")
+                fig_hour = px.bar(hourly, x='hour_str', y='total_revenue', color='total_revenue', custom_data=['total_customers'], labels={'hour_str': 'الساعة', 'total_revenue': 'إجمالي الإيراد (ج.م)'}, color_continuous_scale='Sunset')
+                fig_hour.update_traces(hovertemplate="<b>الساعة: %{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
+                fig_hour.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig_hour, use_container_width=True)
+
+            with col_chart4:
+                st.markdown("##### 🍩 توزيع المصاريف التشغيلية")
+                if not opex_df.empty:
+                    exp_cat_summary = opex_df.groupby('category')['amount'].sum().reset_index()
+                    fig_pie = px.pie(exp_cat_summary, values='amount', names='category', hole=0.45, color_discrete_sequence=px.colors.qualitative.Pastel)
+                    fig_pie.update_layout(margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', showlegend=True)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.info("لا توجد مصاريف تشغيلية لتوزيعها.")
+
+        # ----------------- سجل المراقبة والإجازات -----------------
+        st.markdown("---")
+        st.subheader("🕵️ سجل المراقبة والتعديلات (Audit Logs)")
+        with engine.connect() as conn:
+            audit_filter = "WHERE branch = :b" if selected_branch != "الكل" else ""
+            audit_params = {"b": selected_branch} if selected_branch != "الكل" else {}
+            try:
+                audit_df = pd.read_sql_query(text(f"SELECT timestamp, branch, action_type, entity_type, entity_id, details FROM audit_logs {audit_filter} ORDER BY timestamp DESC LIMIT 50"), conn, params=audit_params)
+                if not audit_df.empty:
+                    st.dataframe(audit_df.rename(columns={
+                        'timestamp': 'الوقت', 'branch': 'الفرع', 'action_type': 'نوع الإجراء',
+                        'entity_type': 'الكيان', 'entity_id': 'رقم المعاملة', 'details': 'التفاصيل'
+                    }), use_container_width=True, hide_index=True)
+                else:
+                    st.info("سجل المراقبة نظيف، لا توجد أي تعديلات أو حذوفات.")
+            except Exception:
+                st.info("سجل المراقبة نظيف.")
+
+        st.markdown("---")
+        st.subheader("🏖️ رصيد وإجازات الموظفين")
+        leave_heaven = get_leave_balance("Heaven")
+        leave_9a = get_leave_balance("9A")
+        col_l1, col_l2 = st.columns(2)
+        with col_l1:
+            st.markdown(f"#### 🌴 فرع Heaven: **{leave_heaven} أيام متبقية**")
+            with st.expander("تسجيل إجازة لموظف Heaven (-1 يوم)", expanded=False):
+                with st.form("leave_heaven_form"):
+                    note_h = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
+                    if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (Heaven)", use_container_width=True):
+                        record_leave("Heaven", note_h)
+                        st.success("تم خصم يوم إجازة بنجاح!")
+                        st.rerun()
+        with col_l2:
+            st.markdown(f"#### 🌴 فرع 9A: **{leave_9a} أيام متبقية**")
+            with st.expander("تسجيل إجازة لموظف 9A (-1 يوم)", expanded=False):
+                with st.form("leave_9a_form"):
+                    note_9a = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
+                    if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (9A)", use_container_width=True):
+                        record_leave("9A", note_9a)
+                        st.success("تم خصم يوم إجازة بنجاح!")
+                        st.rerun()
+
+        with st.expander("📋 عرض سجل حركات الإجازات بالكامل", expanded=False):
+            with engine.connect() as conn:
+                leaves_df = pd.read_sql_query(text("SELECT timestamp, branch, action_type, days_count, notes FROM employee_leaves ORDER BY timestamp DESC LIMIT 50"), conn)
+                if not leaves_df.empty:
+                    st.dataframe(leaves_df.rename(columns={'timestamp': 'الوقت', 'branch': 'الفرع', 'action_type': 'نوع الحركة', 'days_count': 'الأيام', 'notes': 'الملاحظات'}), use_container_width=True, hide_index=True)
+                else:
+                    st.info("لا توجد حركات إجازات مسجلة بعد.")
 
         # ----------------- تصدير الملفات عند الطلب فقط (Lazy-Loaded وسريع) -----------------
         st.markdown("---")
