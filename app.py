@@ -151,19 +151,21 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ----------------- DB SETUP -----------------
-try:
-    if "DATABASE_URL" in st.secrets:
-        DB_URL = st.secrets["DATABASE_URL"]
-        IS_POSTGRES = True
-    else:
-        DB_URL = "sqlite:///photobooth.db"
-        IS_POSTGRES = False
-except Exception:
-    DB_URL = "sqlite:///photobooth.db"
-    IS_POSTGRES = False
+# ----------------- DB SETUP (CACHED ENGINE) -----------------
+@st.cache_resource
+def get_db_engine():
+    try:
+        if "DATABASE_URL" in st.secrets:
+            url = st.secrets["DATABASE_URL"]
+        else:
+            url = "sqlite:///photobooth.db"
+    except Exception:
+        url = "sqlite:///photobooth.db"
+    return create_engine(url, pool_pre_ping=True)
 
-engine = create_engine(DB_URL, pool_pre_ping=True)
+engine = get_db_engine()
+IS_POSTGRES = engine.url.drivername.startswith("postgres")
+
 @st.cache_resource
 def init_db():
     pk_def = "id SERIAL PRIMARY KEY" if IS_POSTGRES else "id INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -238,6 +240,10 @@ def init_db():
             )
         """))
 
+        # تسريع البحث والاستعلامات
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tx_perf ON transactions(branch, is_collected, day_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_exp_perf ON expenses(branch, category, day_id)"))
+
     alters = [
         "ALTER TABLE transactions ADD COLUMN event_id INTEGER",
         "ALTER TABLE expenses ADD COLUMN event_id INTEGER"
@@ -249,11 +255,9 @@ def init_db():
         except Exception:
             pass
 
-    # إغلاق وتسوية كل ما سبق اللحظة لتصفير العهدة (تنفيذ لمرة واحدة)
     with engine.begin() as conn:
         row = conn.execute(text("SELECT value FROM app_state WHERE key = 'clean_baseline_applied'")).fetchone()
         if not row:
-            # جعل كل المبيعات القديمة محصلة وكل النثريات القديمة مسواة ومغلقة تماماً
             conn.execute(text("UPDATE transactions SET is_collected = 1"))
             conn.execute(text("UPDATE expenses SET category = 'نثريات مسواة' WHERE category = 'نثريات وتشغيل'"))
             conn.execute(text("INSERT INTO app_state (key, value) VALUES ('clean_baseline_applied', 'done')"))
@@ -269,6 +273,8 @@ def init_db():
             VALUES ('Heaven', 2500, 2500, 0, 1.1, :ts)
             ON CONFLICT (branch) DO NOTHING
         """), {"ts": get_egypt_now_str()})
+
+    return True
 
 init_db()
 
@@ -793,7 +799,6 @@ if role == "employee":
                     st.error("⚠️ رصيد الورق غير كافٍ!")
                 else:
                     record_transaction(branch, 1, 30.0)
-                    st.success("✅ تم تسجيل البيع!")
                     st.rerun()
         with btn_col2:
             if st.button("🎞️ كارتين\n(50 ج - 2 ورقة)", use_container_width=True):
@@ -801,7 +806,6 @@ if role == "employee":
                     st.error("⚠️ رصيد الورق غير كافٍ!")
                 else:
                     record_transaction(branch, 2, 50.0)
-                    st.success("✅ تم تسجيل البيع!")
                     st.rerun()
         with btn_col3:
             if st.button("📸 عرض 5 كروت\n(100 ج - 5 ورقات)", use_container_width=True):
@@ -809,7 +813,6 @@ if role == "employee":
                     st.error("⚠️ رصيد الورق غير كافٍ (أقل من 5 ورقات)!")
                 else:
                     record_transaction(branch, 5, 100.0)
-                    st.success("✅ تم تسجيل بيع 5 كروت بـ 100 ج!")
                     st.rerun()
     else:
         btn_col1, btn_col2, btn_col3 = st.columns(3)
@@ -819,7 +822,6 @@ if role == "employee":
                     st.error("⚠️ رصيد الورق غير كافٍ!")
                 else:
                     record_transaction(branch, 1, 50.0)
-                    st.success("✅ تم تسجيل البيع!")
                     st.rerun()
         with btn_col2:
             if st.button("🎞️ كارت ثلاثي\n(90 ج - 2 ورقة)", use_container_width=True):
@@ -827,7 +829,6 @@ if role == "employee":
                     st.error("⚠️ رصيد الورق غير كافٍ!")
                 else:
                     record_transaction(branch, 2, 90.0)
-                    st.success("✅ تم تسجيل البيع!")
                     st.rerun()
         with btn_col3:
             if st.button("📸 كارت رباعي\n(120 ج - 3 ورقات)", use_container_width=True):
@@ -835,7 +836,6 @@ if role == "employee":
                     st.error("⚠️ رصيد الورق غير كافٍ!")
                 else:
                     record_transaction(branch, 3, 120.0)
-                    st.success("✅ تم تسجيل البيع!")
                     st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -851,19 +851,17 @@ if role == "employee":
                         st.error("رصيد الورق المتاح لا يكفي!")
                     else:
                         record_waste(branch, int(w_qty), w_notes.strip())
-                        st.warning(f"تم خصم {w_qty} ورقة تالفة من المخزون.")
                         st.rerun()
     with act_c2:
         with st.expander("🎁 تسجيل طباعة مجانية (ضيافة / إهداء)", expanded=False):
             with st.form("free_input_form", clear_on_submit=True):
                 f_qty = st.number_input("عدد الورق المجاني المطبوع:", min_value=1, max_value=50, value=1, step=1)
-                f_notes = st.text_input("جهة الإهداء / السبب:", placeholder="مثال: صاحب المكان، تسويق...")
+                f_notes = st.text_input("جهة الإهداء / السبب:", placeholder="مثال: صاحب المكان...")
                 if st.form_submit_button("تأكيد صرف المجاني", use_container_width=True):
                     if current_stock < f_qty:
                         st.error("رصيد الورق المتاح لا يكفي!")
                     else:
                         record_free_prints(branch, int(f_qty), f_notes.strip() if f_notes.strip() else "طباعة مجانية / ضيافة")
-                        st.success(f"تم تسجيل {f_qty} ورقة مجانية وخصمها من الرصيد.")
                         st.rerun()
 
     st.markdown("<br><hr>", unsafe_allow_html=True)
@@ -871,36 +869,28 @@ if role == "employee":
     with col_manual:
         with st.expander("⚙️ إدخال مبيعات يدوي", expanded=False):
             with st.form("manual_form", clear_on_submit=True):
-                prints = st.number_input("عدد الورق المطبوع", min_value=1, max_value=50, value=None, step=1, placeholder="أدخل عدد الورق...")
-                amount = st.number_input("المبلغ المدفوع (ج.م)", min_value=0.0, value=None, step=10.0, placeholder="أدخل المبلغ...")
-                submit_btn = st.form_submit_button("✅ تسجيل يدوياً", use_container_width=True)
-                if submit_btn:
-                    if prints is None or amount is None:
-                        st.error("⚠️ يرجى إدخال عدد الورق والمبلغ أولاً!")
-                    elif current_stock < prints:
-                        st.error("⚠️ رصيد الورق المتاح غير كافٍ!")
-                    else:
-                        record_transaction(branch, prints, amount)
-                        st.success("تم التسجيل يدوياً!")
-                        st.rerun()
-
+                prints = st.number_input("عدد الورق المطبوع", min_value=1, max_value=50, value=None, step=1)
+                amount = st.number_input("المبلغ المدفوع (ج.م)", min_value=0.0, value=None, step=10.0)
+                if st.form_submit_button("✅ تسجيل يدوياً", use_container_width=True):
+                    if prints and amount is not None:
+                        if current_stock >= prints:
+                            record_transaction(branch, prints, amount)
+                            st.rerun()
+                        else:
+                            st.error("رصيد الورق لا يكفي!")
     with col_exp:
         with st.expander("💸 تسجيل مصروفات سريعة", expanded=False):
             with st.form("employee_expense_form", clear_on_submit=True):
-                exp_target = st.selectbox("جهة المصروف:", [branch, "Events"], format_func=lambda x: f"فرع {x}" if x != "Events" else "🎪 إيفنت خارجي (Events)")
-                exp_amount = st.number_input("مبلغ المصروف (ج.م)", min_value=1.0, value=None, step=5.0, placeholder="أدخل المبلغ...")
-                exp_desc = st.text_input("وصف المصروف", placeholder="مثال: شاي، صيانة، نثريات...")
-                submit_exp = st.form_submit_button("💸 تسجيل المصروف", use_container_width=True)
-                if submit_exp:
-                    if exp_amount is None or not exp_desc.strip():
-                        st.error("⚠️ يرجى إدخال المبلغ ووصف المصروف!")
-                    else:
+                exp_target = st.selectbox("جهة المصروف:", [branch, "Events"], format_func=lambda x: f"فرع {x}" if x != "Events" else "🎪 إيفنت خارجي")
+                exp_amount = st.number_input("مبلغ المصروف (ج.م)", min_value=1.0, value=None, step=5.0)
+                exp_desc = st.text_input("وصف المصروف", placeholder="شاي، صيانة...")
+                if st.form_submit_button("💸 تسجيل المصروف", use_container_width=True):
+                    if exp_amount and exp_desc.strip():
                         record_expense(exp_target, float(exp_amount), exp_desc.strip(), f"موظف {branch}", "نثريات وتشغيل")
-                        st.success("تم تسجيل المصروف بنجاح!")
                         st.rerun()
 
     st.markdown("---")
-    st.subheader("📋 عمليات يوم العمل الحالي (اليوم بالكامل)")
+    st.subheader("📋 عمليات يوم العمل الحالي")
     today_str = get_egypt_today_str()
     with engine.connect() as conn:
         today_tx = pd.read_sql_query(
@@ -916,73 +906,25 @@ if role == "employee":
             display_user_tx = today_tx.rename(columns={'timestamp': 'الوقت', 'prints_count': 'عدد الورق', 'amount_paid': 'المبلغ (ج.م)'})
             st.dataframe(display_user_tx.drop(columns=['id']), use_container_width=True, hide_index=True)
             
-            st.markdown("##### 🛠️ إدارة / تعديل / حذف مبيعات اليوم")
-            options = {f"عملية #{row['id']} - الساعة {row['timestamp'].split(' ')[1]} ({row['prints_count']} ورق | {row['amount_paid']} ج)": row['id'] for _, row in today_tx.iterrows()}
-            selected_label = st.selectbox("اختر العملية للتحكم بها:", list(options.keys()), key="sel_tx")
+            options = {f"عملية #{row['id']} - ({row['prints_count']} ورق | {row['amount_paid']} ج)": row['id'] for _, row in today_tx.iterrows()}
+            selected_label = st.selectbox("اختر العملية للتعديل أو الحذف:", list(options.keys()), key="sel_tx")
             selected_id = options[selected_label]
             selected_row = today_tx[today_tx['id'] == selected_id].iloc[0]
             
             col_act1, col_act2 = st.columns(2)
             with col_act1:
-                with st.expander("✏️ تعديل العملية المحددة", expanded=False):
+                with st.expander("✏️ تعديل العملية", expanded=False):
                     with st.form("edit_form"):
                         new_p = st.number_input("تعديل عدد الورق:", min_value=1, max_value=50, value=int(selected_row['prints_count']), step=1)
-                        new_a = st.number_input("تعديل المبلغ (ج.م):", min_value=0.0, value=float(selected_row['amount_paid']), step=10.0)
-                        if st.form_submit_button("حفظ التعديلات", use_container_width=True):
-                            if update_transaction(selected_id, branch, new_p, new_a):
-                                st.success("تم تعديل العملية بنجاح!")
-                                st.rerun()
+                        new_a = st.number_input("تعديل المبلغ:", min_value=0.0, value=float(selected_row['amount_paid']), step=10.0)
+                        if st.form_submit_button("حفظ التعديل", use_container_width=True):
+                            update_transaction(selected_id, branch, new_p, new_a)
+                            st.rerun()
             with col_act2:
-                with st.expander("🗑️ حذف العملية المحددة", expanded=False):
-                    st.warning(f"هل أنت متأكد من حذف العملية #{selected_id}؟ سيتم استرجاع الورق للمخزون.")
-                    if st.button("تأكيد الحذف نهائياً", type="primary", use_container_width=True, key="del_tx_btn"):
-                        if delete_transaction(selected_id, branch):
-                            st.success("تم مسح العملية واسترجاع الورق بنجاح!")
-                            st.rerun()
-        else:
-            st.info("لا توجد مبيعات مسجلة في يوم العمل الحالي حتى الآن.")
-
-    st.markdown("---")
-    st.subheader("💸 مصروفات يوم العمل الحالي")
-    with engine.connect() as conn:
-        today_exp_df = pd.read_sql_query(
-            text("""
-                SELECT e.id, e.timestamp, e.amount, e.description 
-                FROM expenses e
-                JOIN days d ON e.day_id = d.id
-                WHERE d.date = :date AND e.branch = :branch 
-                ORDER BY e.timestamp DESC
-            """), conn, params={"date": today_str, "branch": branch}
-        )
-        if not today_exp_df.empty:
-            disp_exp = today_exp_df.rename(columns={'timestamp': 'الوقت', 'amount': 'المبلغ (ج.م)', 'description': 'الوصف'})
-            st.dataframe(disp_exp.drop(columns=['id']), use_container_width=True, hide_index=True)
-            
-            st.markdown("##### 🛠️ إدارة / تعديل / حذف مصروف من اليوم")
-            exp_opts = {f"مصروف #{r['id']} - الساعة {r['timestamp'].split(' ')[1]} ({r['amount']} ج | {r['description']})": r['id'] for _, r in today_exp_df.iterrows()}
-            sel_exp_label = st.selectbox("اختر المصروف للتحكم به:", list(exp_opts.keys()), key="sel_exp")
-            sel_exp_id = exp_opts[sel_exp_label]
-            sel_exp_row = today_exp_df[today_exp_df['id'] == sel_exp_id].iloc[0]
-            
-            col_e1, col_e2 = st.columns(2)
-            with col_e1:
-                with st.expander("✏️ تعديل المصروف المحدد", expanded=False):
-                    with st.form("edit_exp_form"):
-                        new_ea = st.number_input("تعديل المبلغ:", min_value=1.0, value=float(sel_exp_row['amount']), step=5.0)
-                        new_ed = st.text_input("تعديل الوصف:", value=str(sel_exp_row['description']))
-                        if st.form_submit_button("حفظ تعديل المصروف", use_container_width=True):
-                            if update_expense(sel_exp_id, new_ea, new_ed, branch):
-                                st.success("تم تعديل المصروف بنجاح!")
-                                st.rerun()
-            with col_e2:
-                with st.expander("🗑️ حذف المصروف المحدد", expanded=False):
-                    st.warning(f"هل أنت متأكد من حذف المصروف #{sel_exp_id}؟")
-                    if st.button("تأكيد حذف المصروف نهائياً", type="primary", use_container_width=True, key="del_exp_btn"):
-                        if delete_expense(sel_exp_id, branch):
-                            st.success("تم حذف المصروف بنجاح!")
-                            st.rerun()
-        else:
-            st.info("لا توجد مصروفات مسجلة في هذا الفرع لليوم الحالي.")
+                with st.expander("🗑️ حذف العملية", expanded=False):
+                    if st.button("تأكيد الحذف واسترجاع الورق", type="primary", use_container_width=True, key="del_tx_btn"):
+                        delete_transaction(selected_id, branch)
+                        st.rerun()
 
 # ==============================================================
 # 2. ADMIN DASHBOARD
@@ -990,36 +932,12 @@ if role == "employee":
 elif role == "admin":
     check_and_add_monthly_allowance()
 
-    with engine.connect() as conn:
-        all_tx_raw = pd.read_sql_query(text("SELECT t.*, d.date FROM transactions t JOIN days d ON t.day_id = d.id ORDER BY t.timestamp ASC"), conn)
-        all_exp_raw = pd.read_sql_query(text("SELECT e.*, d.date as operational_date FROM expenses e JOIN days d ON e.day_id = d.id ORDER BY e.timestamp ASC"), conn)
-        all_events_raw = pd.read_sql_query(text("SELECT * FROM events ORDER BY event_date ASC, start_time ASC"), conn)
-        all_drawings = pd.read_sql_query(text("SELECT * FROM cash_drawings ORDER BY timestamp DESC"), conn)
-
-    for col_name in ['total_amount', 'total_expenses', 'net_profit', 'remaining_amount', 'deposit_paid']:
-        if col_name not in all_events_raw.columns:
-            all_events_raw[col_name] = 0.0
-
-    all_dates = []
-    if not all_tx_raw.empty:
-        all_dates.extend(pd.to_datetime(all_tx_raw['date']).dt.date.tolist())
-    if not all_exp_raw.empty:
-        all_dates.extend(pd.to_datetime(all_exp_raw['operational_date']).dt.date.tolist())
-
-    min_date = min(all_dates) if all_dates else date.today()
-    max_date = max(all_dates) if all_dates else date.today()
-
-    bar_c1, bar_c2, bar_c3, bar_c4, bar_c5 = st.columns([2.8, 2.7, 2, 2.2, 1])
+    bar_c1, bar_c2, bar_c3 = st.columns([3, 3, 1])
     with bar_c1:
         st.markdown("<h2 style='margin:0; font-weight:900;'>👑 إدارة المنظومة المالية</h2>", unsafe_allow_html=True)
     with bar_c2:
         sec_choice = st.radio("القسم:", ["📊 الفروع والتحليل المالي", "📦 المخزن والتوريدات", "🎪 حجوزات الإيفنتات", "⚙️ إعدادات الفروع"], horizontal=True)
     with bar_c3:
-        selected_branch = st.selectbox("🏢 نطاق التحليل:", ["الكل", "Heaven", "9A", "Events"])
-    with bar_c4:
-        date_range = st.date_input("📅 الفترة:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-    with bar_c5:
-        st.markdown("<br>", unsafe_allow_html=True)
         st.button("🚪 خروج", on_click=logout, use_container_width=True)
     st.markdown("---")
 
@@ -1035,28 +953,10 @@ elif role == "admin":
         ink_heaven_refills = get_ink_refills("Heaven")
         ink_9a_refills = get_ink_refills("9A")
 
-        if warehouse_packets <= 20:
-            st.markdown(f"""
-                <div class="alert-card-danger">
-                    🚨 <b>تنبيه عاجل لإعادة الطلب:</b> رصيد المخزن العام وصل إلى <b>{warehouse_packets:.0f} باكتة</b> ({warehouse_sheets:,} ورقة) وهو أقل من أو يساوي الحد الأدنى (20 باكتة)! يرجى طلب شحنة جديدة.
-                </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-                <div class="alert-card-success">
-                    ✅ <b>حالة المخزن العام ممتازة:</b> متوفر حالياً <b>{warehouse_packets:.0f} باكتة</b> ({warehouse_sheets:,} ورقة).
-                </div>
-            """, unsafe_allow_html=True)
-
-        if stock_heaven < 200:
-            st.warning(f"⚠️ **تنبيه فرع Heaven:** رصيد الورق منخفض ({stock_heaven} ورقة)! الحد الأدنى 200 ورقة.")
-        if stock_9a < 200:
-            st.warning(f"⚠️ **تنبيه فرع 9A:** رصيد الورق منخفض ({stock_9a} ورقة)! الحد الأدنى 200 ورقة.")
-
         inv_c1, inv_c2, inv_c3 = st.columns(3)
         inv_c1.metric("🏢 ورق المخزن العام", f"{warehouse_packets:,.1f} باكتة", f"{warehouse_sheets:,} ورقة")
-        inv_c2.metric("🏪 ورق فرع 9A", f"{stock_9a:,} ورقة", delta=f"{stock_9a - 200}" if stock_9a < 200 else "آمن", delta_color="normal")
-        inv_c3.metric("🏪 ورق فرع Heaven", f"{stock_heaven:,} ورقة", delta=f"{stock_heaven - 200}" if stock_heaven < 200 else "آمن", delta_color="normal")
+        inv_c2.metric("🏪 ورق فرع 9A", f"{stock_9a:,} ورقة")
+        inv_c3.metric("🏪 ورق فرع Heaven", f"{stock_heaven:,} ورقة")
 
         st.markdown("---")
         ink_c1, ink_c2, ink_c3 = st.columns(3)
@@ -1069,99 +969,77 @@ elif role == "admin":
         with col_in1:
             st.markdown("### 📥 استلام وتوريد شحنة جديدة للمخزن")
             with st.form("new_stock_form", clear_on_submit=True):
-                p_qty = st.number_input("عدد باكتات الورق المستلمة (1 باكتة = 100 ورقة):", min_value=0, value=0, step=10)
-                ink_qty = st.number_input("عدد علب الحبر المستلمة (العلبة = 2 ملوة طابعة):", min_value=0.0, value=0.0, step=0.5)
-                bill_cost = st.number_input("إجمالي فاتورة الشراء (ج.م) [لحساب الأصول]:", min_value=0.0, value=0.0, step=100.0)
-                stock_notes = st.text_input("ملاحظات الفاتورة / المورد:", placeholder="شراء ورق، أحبار...")
-                if st.form_submit_button("📥 تأكيد دخول الشحنة للمخزن", use_container_width=True):
+                p_qty = st.number_input("عدد باكتات الورق (1 باكتة = 100 ورقة):", min_value=0, value=0, step=10)
+                ink_qty = st.number_input("عدد علب الحبر (العلبة = 2 ملوة طابعة):", min_value=0.0, value=0.0, step=0.5)
+                bill_cost = st.number_input("إجمالي الفاتورة (ج.م):", min_value=0.0, value=0.0, step=100.0)
+                stock_notes = st.text_input("ملاحظات الفاتورة:", placeholder="شراء ورق، أحبار...")
+                if st.form_submit_button("📥 تأكيد دخول الشحنة", use_container_width=True):
                     if p_qty > 0 or ink_qty > 0:
                         add_warehouse_stock(int(p_qty), float(ink_qty), float(bill_cost), stock_notes)
-                        st.success("✅ تم إضافة الشحنة للمخزن بنجاح وتحديث الرصيد!")
                         st.rerun()
-                    else:
-                        st.error("يرجى إدخال كمية الورق أو الحبر!")
 
         with col_in2:
             st.markdown("### 🚚 تحويل ورق وحبر إلى الفروع")
             with st.expander("📄 تحويل ورق للفرع (بالورقة)", expanded=True):
                 with st.form("transfer_stock_form", clear_on_submit=True):
-                    target_b = st.selectbox("اختر الفرع المحول إليه:", ["9A", "Heaven"], key="t_b_paper")
-                    trans_sheets = st.number_input("عدد الورق المحول (ورقة):", min_value=1, max_value=max(int(warehouse_sheets), 1), value=100, step=50)
-                    trans_notes = st.text_input("ملاحظات التحويل:", placeholder="تسليم شيفت المساء...")
-                    if st.form_submit_button("🚚 تحويل الورق فوراً للفرع", use_container_width=True):
+                    target_b = st.selectbox("الفرع المحول إليه:", ["9A", "Heaven"], key="t_b_paper")
+                    trans_sheets = st.number_input("عدد الورق المحول:", min_value=1, max_value=max(int(warehouse_sheets), 1), value=100, step=50)
+                    trans_notes = st.text_input("ملاحظات التحويل:", placeholder="تسليم شيفت...")
+                    if st.form_submit_button("🚚 تحويل الورق فوراً", use_container_width=True):
                         if warehouse_sheets >= trans_sheets:
                             transfer_stock_to_branch(target_b, int(trans_sheets), trans_notes)
-                            st.success(f"✅ تم تحويل {trans_sheets} ورقة إلى فرع {target_b} بنجاح!")
                             st.rerun()
-                        else:
-                            st.error("⚠️ رصيد المخزن الرئيسي غير كافٍ لهذا التحويل!")
 
             with st.expander("🖋️ تزويد الفرع بحبر (بالملوة)"):
                 with st.form("transfer_ink_form", clear_on_submit=True):
-                    target_b_ink = st.selectbox("اختر الفرع لتزويده بالحبر:", ["9A", "Heaven"], key="t_b_ink")
-                    refills_to_send = st.number_input("عدد المليات المحولة (1 ملوة = نص علبة حبر تكفي ملء الطابعة):", min_value=1, max_value=max(warehouse_refills, 1), value=1, step=1)
-                    ink_trans_notes = st.text_input("ملاحظات تزويد الحبر:", placeholder="ملء طابعة الفرع...")
-                    if st.form_submit_button("تزويد الفرع بالحبر فوراً", use_container_width=True):
+                    target_b_ink = st.selectbox("الفرع:", ["9A", "Heaven"], key="t_b_ink")
+                    refills_to_send = st.number_input("عدد المليات:", min_value=1, max_value=max(warehouse_refills, 1), value=1, step=1)
+                    ink_trans_notes = st.text_input("ملاحظات:", placeholder="ملء طابعة...")
+                    if st.form_submit_button("تزويد الحبر فوراً", use_container_width=True):
                         if warehouse_refills >= refills_to_send:
                             transfer_ink_to_branch(target_b_ink, int(refills_to_send), ink_trans_notes)
-                            st.success(f"تم تزويد فرع {target_b_ink} بـ {refills_to_send} ملوة حبر بنجاح!")
                             st.rerun()
-                        else:
-                            st.error("رصيد الحبر بالمخزن العام لا يكفي!")
 
             with st.expander("✂️ سحب / تسوية رصيد ورق من فرع مباشرة (بالورقة)"):
                 with st.form("manual_adjust_stock_form", clear_on_submit=True):
-                    adj_b = st.selectbox("اختر الفرع:", ["9A", "Heaven"], key="adj_b")
+                    adj_b = st.selectbox("الفرع:", ["9A", "Heaven"], key="adj_b")
                     adj_type = st.radio("نوع التعديل:", ["خصم", "إضافة"], horizontal=True)
-                    adj_qty = st.number_input("عدد الورق (بالورقة):", min_value=1, max_value=2000, value=10, step=5)
-                    adj_notes = st.text_input("سبب التعديل / السحب:", placeholder="سحب أوردر، تسوية جرد...")
-                    if st.form_submit_button("تأكيد تعديل رصيد الفرع", use_container_width=True):
+                    adj_qty = st.number_input("عدد الورق:", min_value=1, max_value=2000, value=10, step=5)
+                    adj_notes = st.text_input("سبب السحب / التعديل:", placeholder="تسوية جرد...")
+                    if st.form_submit_button("تأكيد تعديل الرصيد", use_container_width=True):
                         manual_adjust_branch_stock(adj_b, int(adj_qty), adj_type, adj_notes)
-                        st.success(f"تمت تسوية رصيد فرع {adj_b} بنجاح!")
                         st.rerun()
 
-    # ================= 2.B قسم الإيفنتات الخارجية =================
+    # ================= 2.B قسم الإيفنتات =================
     elif sec_choice == "🎪 حجوزات الإيفنتات":
         st.title("🎪 إدارة حجوزات الإيفنتات الخارجية")
-        total_ev_count = len(all_events_raw)
-        total_ev_rev = all_events_raw['total_amount'].sum() if not all_events_raw.empty else 0
-        total_ev_exp = all_events_raw['total_expenses'].sum() if not all_events_raw.empty else 0
-        total_ev_profit = all_events_raw['net_profit'].sum() if not all_events_raw.empty else 0
-        total_ev_rem = all_events_raw['remaining_amount'].sum() if not all_events_raw.empty else 0
-
-        ev_k1, ev_k2, ev_k3, ev_k4, ev_k5 = st.columns(5)
-        ev_k1.metric("🎪 إجمالي الإيفنتات", f"{total_ev_count}")
-        ev_k2.metric("💰 إجمالي التعاقدات", f"{total_ev_rev:,.0f} ج.م")
-        ev_k3.metric("💸 إجمالي المصروفات", f"{total_ev_exp:,.0f} ج.م", delta=f"-{total_ev_exp:,.0f}", delta_color="normal")
-        ev_k4.metric("📈 صافي الأرباح", f"{total_ev_profit:,.0f} ج.م", delta=f"{total_ev_profit:,.0f}", delta_color="normal")
-        ev_k5.metric("⏳ المتبقي تحصيله", f"{total_ev_rem:,.0f} ج.م", delta=f"-{total_ev_rem:,.0f}" if total_ev_rem > 0 else "0", delta_color="normal")
-        st.markdown("---")
+        with engine.connect() as conn:
+            all_events_raw = pd.read_sql_query(text("SELECT * FROM events ORDER BY event_date ASC, start_time ASC"), conn)
 
         with st.expander("➕ تسجيل حجز إيفنت جديد", expanded=False):
             with st.form("new_event_form", clear_on_submit=True):
                 ef1, ef2, ef3 = st.columns(3)
                 with ef1:
-                    ev_client = st.text_input("اسم العميل / المناسبة:")
-                    ev_loc = st.text_input("مكان الإيفنت / القاعة:")
+                    ev_client = st.text_input("اسم العميل:")
+                    ev_loc = st.text_input("مكان الإيفنت:")
                     ev_dev = st.selectbox("الجهاز المخصص:", ["Heaven", "9A"])
                 with ef2:
                     ev_date = st.date_input("تاريخ الإيفنت:", value=date.today())
-                    ev_hours = st.number_input("عدد الساعات:", min_value=1, max_value=24, value=3, step=1)
+                    ev_hours = st.number_input("الساعات:", min_value=1, max_value=24, value=3, step=1)
                     ev_start = st.time_input("ساعة البداية:", value=time(19, 0))
                 with ef3:
-                    ev_total = st.number_input("إجمالي قيمة الحجز (ج.م):", min_value=100.0, value=2000.0, step=500.0)
+                    ev_total = st.number_input("قيمة الحجز (ج.م):", min_value=100.0, value=2000.0, step=500.0)
                     ev_deposit = st.number_input("العربون المدفوع (ج.م):", min_value=0.0, value=1000.0, step=500.0)
-                    ev_notes = st.text_input("ملاحظات إضافية:")
+                    ev_notes = st.text_input("ملاحظات:")
 
                 start_dt = datetime.combine(ev_date, ev_start)
                 end_dt = start_dt + timedelta(hours=int(ev_hours))
                 ev_start_str = format_arabic_time(start_dt.strftime("%I:%M %p"))
                 ev_end_str = format_arabic_time(end_dt.strftime("%I:%M %p"))
 
-                if st.form_submit_button("💾 تأكيد وحفظ الحجز", use_container_width=True):
+                if st.form_submit_button("💾 حفظ الحجز", use_container_width=True):
                     if ev_client.strip() and ev_loc.strip():
                         create_event(str(ev_date), ev_client.strip(), ev_loc.strip(), ev_dev, int(ev_hours), ev_start_str, ev_end_str, float(ev_total), float(ev_deposit), ev_notes.strip())
-                        st.success("✅ تم تسجيل الحجز بنجاح!")
                         st.rerun()
 
         st.subheader("📌 بطاقات الإيفنتات والموقف المالي")
@@ -1194,26 +1072,14 @@ elif role == "admin":
                 """, unsafe_allow_html=True)
 
                 with st.expander(f"🔍 تفاصيل وتسوية إيفنت #{ev['id']} ({ev['client_name']})"):
-                    if is_settled:
-                        sc1, sc2, sc3, sc4 = st.columns(4)
-                        sc1.info(f"🖨️ الورق: {ev.get('prints_used', 0)} ({ev.get('paper_cost', 0):,.0f} ج)")
-                        sc2.info(f"🚗 مواصلات: {ev.get('transport_cost', 0):,.0f} ج")
-                        sc3.info(f"👨‍💼 أجر موظف: {ev.get('worker_cost', 0):,.0f} ج")
-                        sc4.success(f"📈 صافي ربح: {ev.get('net_profit', 0):,.0f} ج")
-                    else:
+                    if not is_settled:
                         with st.form(f"settle_form_{ev['id']}"):
                             c_b, c_p = st.columns(2)
                             with c_b:
                                 default_idx = 0 if ev.get('device') == '9A' else 1
-                                settle_branch = st.selectbox(
-                                    "🏢 خصم الورق من عهدة فرع:",
-                                    ["9A", "Heaven", "Warehouse"],
-                                    index=default_idx,
-                                    key=f"b_{ev['id']}",
-                                    format_func=lambda x: f"فرع {x}" if x != "Warehouse" else "المخزن العام الرئيسي"
-                                )
+                                settle_branch = st.selectbox("🏢 خصم الورق من عهدة فرع:", ["9A", "Heaven", "Warehouse"], index=default_idx, key=f"b_{ev['id']}")
                             with c_p:
-                                in_prints = c_p.number_input("الورق المستهلك في الإيفنت:", min_value=0, max_value=2000, value=50, step=10, key=f"p_{ev['id']}")
+                                in_prints = c_p.number_input("الورق المستهلك:", min_value=0, max_value=2000, value=50, step=10, key=f"p_{ev['id']}")
 
                             c_t, c_w = st.columns(2)
                             with c_t:
@@ -1221,35 +1087,17 @@ elif role == "admin":
                             with c_w:
                                 in_worker = c_w.number_input("أجر الموظف (ج):", min_value=0.0, value=100.0, step=10.0, key=f"w_{ev['id']}")
 
-                            if st.form_submit_button("✅ اعتماد التنفيذ والتسوية وخصم الورق", use_container_width=True):
+                            if st.form_submit_button("✅ اعتماد التنفيذ والتسوية", use_container_width=True):
                                 complete_event_settlement(ev['id'], settle_branch, int(in_prints), float(in_trans), float(in_worker))
-                                st.success(f"تمت تسوية الإيفنت بنجاح وخصم {in_prints} ورقة من رصيد {settle_branch}!")
                                 st.rerun()
 
-                    if st.button(f"🗑️ حذف الإيفنت #{ev['id']}", key=f"del_ev_{ev['id']}"):
+                    if st.button(f"🗑️ حذف الإيفنت ومسح متعلقاته #{ev['id']}", key=f"del_ev_{ev['id']}"):
                         delete_event(ev['id'])
-                        st.warning("تم حذف الإيفنت ومسح كل ما يتعلق به من مبيعات ومصروفات واسترجاع الورق بنجاح.")
                         st.rerun()
 
-            st.markdown("---")
-            st.subheader("📥 تصدير سجل الإيفنتات بالكامل")
-            events_export = all_events_raw.rename(columns={
-                'id': 'رقم الحجز', 'event_date': 'تاريخ الإيفنت', 'client_name': 'العميل',
-                'location': 'المكان', 'device': 'الجهاز', 'hours': 'الساعات',
-                'start_time': 'البداية', 'end_time': 'النهاية', 'total_amount': 'إجمالي التعاقد (ج.م)',
-                'deposit_paid': 'المبلغ المدفوع (ج.م)', 'remaining_amount': 'المتبقي (ج.م)',
-                'prints_used': 'الورق المستهلك', 'paper_cost': 'تكلفة الورق (ج.م)',
-                'transport_cost': 'المواصلات (ج.م)', 'worker_cost': 'أجر الموظف (ج.م)',
-                'total_expenses': 'إجمالي المصروفات (ج.م)', 'net_profit': 'صافي الربح (ج.م)',
-                'status': 'الحالة', 'notes': 'ملاحظات'
-            })
-            csv_ev = events_export.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 تحميل شيت إكسيل الإيفنتات والمصاريف والأرباح (CSV)", data=csv_ev, file_name=f"events_report_{get_egypt_today_str()}.csv", mime="text/csv", use_container_width=True)
-
-    # ================= 2.C إعدادات الفروع والمرونة =================
+    # ================= 2.C إعدادات الفروع =================
     elif sec_choice == "⚙️ إعدادات الفروع":
         st.title("⚙️ إعدادات التكاليف الثابتة للفروع")
-        st.caption("يمكنك تعديل إيجار أو مرتبات أو تكاليف أي فرع في أي وقت، وسيتم تحديث الحسابات فوراً دون لمس الكود.")
         set_col1, set_col2 = st.columns(2)
         for b_name, col in [("9A", set_col1), ("Heaven", set_col2)]:
             cfg = get_branch_settings(b_name)
@@ -1264,64 +1112,43 @@ elif role == "admin":
                     st.info(f"إجمالي التكلفة الثابتة الشهرية: **{monthly_fixed:,.0f} ج.م** (~ {monthly_fixed/30:,.0f} ج / يومياً)")
                     if st.form_submit_button(f"💾 حفظ إعدادات {b_name}", use_container_width=True):
                         update_branch_settings(b_name, n_rent, n_sal, n_bills, n_cost)
-                        st.success(f"تم تحديث بيانات فرع {b_name} بنجاح!")
                         st.rerun()
 
     # ================= 2.D الفروع والتحليل المالي =================
     else:
-        if len(date_range) == 2:
-            start_dt, end_dt = date_range
-            mask_tx = (pd.to_datetime(all_tx_raw['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_raw['date']).dt.date <= end_dt) if not all_tx_raw.empty else pd.Series(dtype=bool)
-            mask_exp = (pd.to_datetime(all_exp_raw['operational_date']).dt.date >= start_dt) & (pd.to_datetime(all_exp_raw['operational_date']).dt.date <= end_dt) if not all_exp_raw.empty else pd.Series(dtype=bool)
-            filtered_tx = all_tx_raw.loc[mask_tx].copy() if not all_tx_raw.empty else pd.DataFrame()
-            filtered_exp = all_exp_raw.loc[mask_exp].copy() if not all_exp_raw.empty else pd.DataFrame()
-        else:
-            filtered_tx = all_tx_raw.copy()
-            filtered_exp = all_exp_raw.copy()
+        with engine.connect() as conn:
+            all_tx_raw = pd.read_sql_query(text("SELECT t.*, d.date FROM transactions t JOIN days d ON t.day_id = d.id ORDER BY t.timestamp ASC"), conn)
+            all_exp_raw = pd.read_sql_query(text("SELECT e.*, d.date as operational_date FROM expenses e JOIN days d ON e.day_id = d.id ORDER BY e.timestamp ASC"), conn)
+            all_drawings = pd.read_sql_query(text("SELECT * FROM cash_drawings ORDER BY timestamp DESC"), conn)
 
-        if selected_branch == "الكل":
-            tx_subset = filtered_tx
-            exp_subset = filtered_exp
-        elif selected_branch == "Events":
-            tx_subset = filtered_tx[filtered_tx['branch'] == "Events"] if not filtered_tx.empty else pd.DataFrame()
-            exp_subset = filtered_exp[filtered_exp['branch'] == "Events"] if not filtered_exp.empty else pd.DataFrame()
-        else:
-            tx_subset = filtered_tx[filtered_tx['branch'] == selected_branch] if not filtered_tx.empty else pd.DataFrame()
-            exp_subset = filtered_exp[filtered_exp['branch'].isin([selected_branch, 'General'])] if not filtered_exp.empty else pd.DataFrame()
+        top_f1, _ = st.columns([1, 2])
+        with top_f1:
+            selected_branch = st.selectbox("🏢 نطاق التحليل:", ["الكل", "Heaven", "9A", "Events"])
+
+        tx_subset = all_tx_raw if selected_branch == "الكل" else all_tx_raw[all_tx_raw['branch'] == selected_branch]
+        exp_subset = all_exp_raw if selected_branch == "الكل" else (all_exp_raw[all_exp_raw['branch'] == "Events"] if selected_branch == "Events" else all_exp_raw[all_exp_raw['branch'].isin([selected_branch, 'General'])])
 
         total_rev_all = tx_subset['amount_paid'].sum() if not tx_subset.empty else 0.0
         total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
-        total_cust_all = len(tx_subset)
         
-        # المصروفات التشغيلية
         opex_df = exp_subset[~exp_subset['category'].isin(['مشتريات مخزن وأصول', 'توزيعات أرباح'])] if not exp_subset.empty else pd.DataFrame()
         paid_opex_total = opex_df['amount'].sum() if not opex_df.empty else 0.0
 
-        # أرباح مسحوبة
         drawings_df = exp_subset[exp_subset['category'] == 'توزيعات أرباح'] if not exp_subset.empty else pd.DataFrame()
-        drawings_exp_sum = drawings_df['amount'].sum() if not drawings_df.empty else 0.0
-        total_drawings = all_drawings['amount'].sum() + drawings_exp_sum
+        total_drawings = all_drawings['amount'].sum() + (drawings_df['amount'].sum() if not drawings_df.empty else 0.0)
 
-        # تكلفة الورق المباشرة
         cfg_cost = float(get_branch_settings(selected_branch if selected_branch in ["9A", "Heaven"] else "9A").get("cost_per_print", 1.1))
         cogs_total = total_prints_all * cfg_cost
         net_profit = total_rev_all - paid_opex_total
 
-        # العهدة المعلقة الجديدة (مبيعات جديدة غير محصلة - نثريات جديدة غير مسواة)
-        uncollected_tx = tx_subset[tx_subset['is_collected'] == 0]
-        new_uncollected_sales = uncollected_tx['amount_paid'].sum() if not uncollected_tx.empty else 0.0
-        
+        uncoll_tx = tx_subset[tx_subset['is_collected'] == 0]
+        new_uncollected_sales = uncoll_tx['amount_paid'].sum() if not uncoll_tx.empty else 0.0
         new_unsettled_exp_df = exp_subset[exp_subset['category'] == 'نثريات وتشغيل'] if not exp_subset.empty else pd.DataFrame()
         new_unsettled_exp = new_unsettled_exp_df['amount'].sum() if not new_unsettled_exp_df.empty else 0.0
-        
         net_uncollected_custody = max(new_uncollected_sales - new_unsettled_exp, 0.0)
 
-        # الكاش بالخزينة = 5,000 ج (رصيدك الفعلي الآن) + أي توريدات جديدة لاحقة - أي مسحوبات جديدة لاحقة
         collected_new_sales = total_rev_all - new_uncollected_sales
-        baseline_sales = 42640.0
-        new_collected_after_baseline = max(collected_new_sales - baseline_sales, 0.0)
-        
-        # الكاش بالخزينة الحالي الفعلي
+        new_collected_after_baseline = max(collected_new_sales - 42640.0, 0.0)
         safe_cash = 5000.0 + new_collected_after_baseline - all_drawings['amount'].sum()
 
         waste_count = get_waste_count(selected_branch)
@@ -1331,57 +1158,45 @@ elif role == "admin":
         st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية (P&L)")
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
-        kpi2.metric("🖨️ استهلاك الورق", f"{total_prints_all:,} ورقة", delta=f"{cogs_total:,.0f} ج خامات (×{cfg_cost}ج)", delta_color="off")
+        kpi2.metric("🖨️ استهلاك الورق", f"{total_prints_all:,} ورقة", delta=f"{cogs_total:,.0f} ج خامات", delta_color="off")
         kpi3.metric("🏢 المصروفات المسجلة", f"{paid_opex_total:,.0f} ج.م", delta=f"-{paid_opex_total:,.0f}", delta_color="normal")
         kpi4.metric("📈 صافي الأرباح الكلية", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
 
         st.markdown("#### 💵 حركة السيولة والفلوس فين؟")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
         kpi5.metric("🏦 الكاش بالخزينة (معاك الآن)", f"{safe_cash:,.0f} ج.م", delta="في جيبك حالياً")
-        kpi6.metric("⏳ عهدة معلقة مع الموظفين", f"{net_uncollected_custody:,.0f} ج.م", delta="لا توجد عهدة سابقة" if net_uncollected_custody == 0 else "عهدة جديدة بالدرج", delta_color="off")
+        kpi6.metric("⏳ عهدة معلقة مع الموظفين", f"{net_uncollected_custody:,.0f} ج.م", delta="لا توجد عهدة" if net_uncollected_custody == 0 else "عهدة جديدة", delta_color="off")
         kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات ملاك", delta_color="off")
         kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
         st.markdown("---")
 
-        # ----------------- قسم تسليم وتوريد العهدة الصافية والجزئية -----------------
+        # ----------------- تسليم وتوريد العهدة -----------------
         st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
         b_list = ["9A", "Heaven"] if selected_branch == "الكل" else ([selected_branch] if selected_branch in ["9A", "Heaven"] else [])
-        has_pending_custody = False
+        has_pending = False
 
         for b_name in b_list:
             with engine.connect() as conn:
                 uncoll_s = conn.execute(text("SELECT COALESCE(SUM(amount_paid), 0) FROM transactions WHERE branch = :b AND is_collected = 0"), {"b": b_name}).fetchone()[0]
                 unsettled_e = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE branch = :b AND category = 'نثريات وتشغيل'"), {"b": b_name}).fetchone()[0]
-            uncoll_s = float(uncoll_s)
-            unsettled_e = float(unsettled_e)
+            uncoll_s, unsettled_e = float(uncoll_s), float(unsettled_e)
             net_avail = max(uncoll_s - unsettled_e, 0.0)
 
             if uncoll_s > 0 or unsettled_e > 0:
-                has_pending_custody = True
-                with st.expander(f"🏢 فرع {b_name} | الصافي المتاح بالدرج: {net_avail:,.0f} ج.م (مبيعات: {uncoll_s:,.0f} ج - نثريات: {unsettled_e:,.0f} ج)", expanded=True):
+                has_pending = True
+                with st.expander(f"🏢 فرع {b_name} | الصافي المتاح: {net_avail:,.0f} ج.م", expanded=True):
                     col_p1, col_p2 = st.columns([3, 2])
                     with col_p1:
-                        amt_to_take = st.number_input(
-                            f"المبلغ المراد استلامه وتوريده للخزينة من فرع {b_name} (ج.م):",
-                            min_value=0.0,
-                            max_value=float(net_avail),
-                            value=float(net_avail),
-                            step=50.0,
-                            key=f"input_take_{b_name}"
-                        )
-                        diff_rem = net_avail - amt_to_take
-                        if diff_rem > 0:
-                            st.info(f"💡 سيتبقى في درج فرع {b_name} فكة عهدة مستمرة: **{diff_rem:,.0f} ج.م**")
+                        amt_to_take = st.number_input(f"المبلغ المستلم من فرع {b_name} (ج.م):", min_value=0.0, max_value=float(net_avail), value=float(net_avail), step=50.0, key=f"inp_{b_name}")
                     with col_p2:
                         st.markdown("<br>", unsafe_allow_html=True)
-                        if st.button(f"تأكيد استلام ({amt_to_take:,.0f} ج) للخزينة", key=f"btn_take_{b_name}", use_container_width=True):
+                        if st.button(f"تأكيد استلام ({amt_to_take:,.0f} ج)", key=f"btn_{b_name}", use_container_width=True):
                             if amt_to_take > 0:
                                 settle_partial_drawer(b_name, amt_to_take)
-                                st.success(f"تم توريد {amt_to_take:,.0f} ج.م إلى الخزينة بنجاح!")
                                 st.rerun()
 
-        if not has_pending_custody:
-            st.success("✅ العهدة مع الموظفين صفر حالياً، لا توجد أي مبالغ معلقة بالدرج!")
+        if not has_pending:
+            st.success("✅ العهدة مع الموظفين صفر حالياً، لا توجد أي مبالغ معلقة!")
 
         st.markdown("---")
         with st.expander("💼 تسجيل سحب أرباح للشركاء (Drawings)"):
@@ -1392,64 +1207,25 @@ elif role == "admin":
                 if st.form_submit_button("سحب الأرباح", use_container_width=True):
                     if d_amt and d_rec.strip():
                         record_cash_drawing(float(d_amt), d_rec.strip(), d_note.strip())
-                        st.success("تم تسجيل مسحوبات الأرباح بنجاح!")
                         st.rerun()
 
-        st.markdown("---")
-        with st.expander("💸 تسجيل مصروفات جديدة بواسطة الأدمن", expanded=False):
+        with st.expander("💸 تسجيل مصروفات جديدة للأدمن"):
             with st.form("admin_exp_form", clear_on_submit=True):
                 c_a1, c_a2, c_a3, c_a4 = st.columns(4)
                 with c_a1:
-                    ad_branch = st.selectbox("جهة المصروف:", ["General", "Heaven", "9A", "Events"], format_func=lambda x: "عام (يوزع)" if x == "General" else ("🎪 إيفنت (Events)" if x == "Events" else f"فرع {x}"))
+                    ad_branch = st.selectbox("جهة المصروف:", ["General", "Heaven", "9A", "Events"], format_func=lambda x: "عام (يوزع)" if x == "General" else ("🎪 إيفنت" if x == "Events" else f"فرع {x}"))
                 with c_a2:
                     ad_cat = st.selectbox("بند المصروف:", ["نثريات مسواة", "إيجار", "مرتبات وعمالة", "فواتير وأقساط", "إعلانات وتسويق"])
                 with c_a3:
                     ad_amount = st.number_input("المبلغ (ج.م):", min_value=1.0, value=None, step=50.0)
                 with c_a4:
-                    ad_desc = st.text_input("وصف المصروف:", placeholder="شاي، صيانة، إيجار...")
-                if st.form_submit_button("تسجيل المصروف للأدمن", use_container_width=True):
+                    ad_desc = st.text_input("الوصف:", placeholder="إيجار، صيانة...")
+                if st.form_submit_button("تسجيل المصروف", use_container_width=True):
                     if ad_amount and ad_desc.strip():
                         record_expense(ad_branch, float(ad_amount), ad_desc.strip(), "المدير", ad_cat)
-                        st.success("تم تسجيل المصروف بنجاح!")
                         st.rerun()
 
-        # ----------------- جداول اليوم الحالي -----------------
-        st.markdown("---")
-        today_b_str = get_egypt_today_str()
-        st.subheader(f"⚡ مبيعات ومصروفات يوم العمل الحالي ({selected_branch}) - {today_b_str}")
-        
-        c_tod1, c_tod2 = st.columns(2)
-        with c_tod1:
-            st.markdown("##### 🛒 مبيعات اليوم الحالي")
-            with engine.connect() as conn:
-                f_b = "AND t.branch = :branch" if selected_branch != "الكل" else ""
-                p_b = {"date": today_b_str, "branch": selected_branch} if selected_branch != "الكل" else {"date": today_b_str}
-                today_admin_tx = pd.read_sql_query(text(f"""
-                    SELECT t.timestamp, t.branch, t.prints_count, t.amount_paid
-                    FROM transactions t JOIN days d ON t.day_id = d.id
-                    WHERE d.date = :date {f_b} ORDER BY t.timestamp DESC
-                """), conn, params=p_b)
-            if not today_admin_tx.empty:
-                st.dataframe(today_admin_tx.rename(columns={'timestamp': 'الوقت', 'branch': 'الفرع', 'prints_count': 'الورق', 'amount_paid': 'المبلغ (ج.م)'}), use_container_width=True, hide_index=True)
-            else:
-                st.info("لا توجد مبيعات مسجلة اليوم.")
-
-        with c_tod2:
-            st.markdown("##### 💸 مصروفات اليوم الحالي")
-            with engine.connect() as conn:
-                f_e = "AND (e.branch = :branch OR e.branch = 'General')" if selected_branch != "الكل" else ""
-                p_e = {"date": today_b_str, "branch": selected_branch} if selected_branch != "الكل" else {"date": today_b_str}
-                today_admin_exp = pd.read_sql_query(text(f"""
-                    SELECT e.timestamp, e.branch, e.amount, e.description, e.created_by 
-                    FROM expenses e JOIN days d ON e.day_id = d.id
-                    WHERE d.date = :date {f_e} ORDER BY e.timestamp DESC
-                """), conn, params=p_e)
-            if not today_admin_exp.empty:
-                st.dataframe(today_admin_exp.rename(columns={'timestamp': 'الوقت', 'branch': 'الفرع', 'amount': 'المبلغ (ج.م)', 'description': 'الوصف', 'created_by': 'بواسطة'}), use_container_width=True, hide_index=True)
-            else:
-                st.info("لا توجد مصروفات مسجلة اليوم.")
-
-        # ----------------- جدول سلوك العمليات اليومي مع ربح اليوم -----------------
+        # ----------------- جدول سلوك العمليات والربح اليومي -----------------
         st.markdown("---")
         if not tx_subset.empty:
             days_df = tx_subset.groupby('date').agg(
@@ -1472,15 +1248,7 @@ elif role == "admin":
             day_exp_map = exp_subset.groupby('operational_date')['amount'].sum().to_dict() if not exp_subset.empty else {}
             behavior_df['day_expenses'] = behavior_df['date'].map(day_exp_map).fillna(0.0)
 
-            if selected_branch == "9A":
-                daily_fixed_cost = 255.0
-            elif selected_branch == "Heaven":
-                daily_fixed_cost = 167.0
-            elif selected_branch == "Events":
-                daily_fixed_cost = 0.0
-            else:
-                daily_fixed_cost = 422.0
-
+            daily_fixed_cost = 255.0 if selected_branch == "9A" else (167.0 if selected_branch == "Heaven" else (0.0 if selected_branch == "Events" else 422.0))
             cfg_cost_val = float(get_branch_settings("9A").get("cost_per_print", 1.1))
             behavior_df['paper_cost'] = behavior_df['total_prints'] * cfg_cost_val
             behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - daily_fixed_cost
@@ -1493,45 +1261,19 @@ elif role == "admin":
             behavior_df['last_time'] = behavior_df['last_customer_time'].apply(extract_time)
             behavior_df['peak_str'] = behavior_df['peak_hour'].apply(lambda x: f"{int(x)}:00" if pd.notna(x) else "-")
 
-            st.subheader(f"📋 إيرادات وسلوك العمليات والربح اليومي الفعلي ({selected_branch})")
-            st.caption(f"صافي ربح اليوم يحسب بعد خصم استهلاك الورق (×{cfg_cost_val}ج) ونثريات اليوم وتكلفة التشغيل الثابتة المقدرة ({daily_fixed_cost:,.0f} ج/يوم):")
+            st.subheader(f"📋 إيرادات وسلوك العمليات والربح اليومي ({selected_branch})")
             display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue', 'day_expenses', 'daily_net_profit']].copy()
             display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
             st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-        st.subheader(f"💸 سجل ومصاريف الأيام خلال الفترة ({selected_branch})")
-        if not exp_subset.empty:
-            exp_display_df = exp_subset[['operational_date', 'timestamp', 'branch', 'amount', 'description', 'created_by']].copy()
-            exp_display_df['date_obj'] = pd.to_datetime(exp_display_df['operational_date'])
-            exp_display_df['day_name'] = exp_display_df['date_obj'].dt.day_name().map(ARABIC_DAYS)
-            exp_display_df = exp_display_df.sort_values(by='timestamp', ascending=False)
-            final_exp_table = exp_display_df[['operational_date', 'day_name', 'timestamp', 'branch', 'amount', 'description', 'created_by']].copy()
-            final_exp_table.columns = ['التاريخ', 'اليوم', 'الوقت', 'الجهة / الفرع', 'المبلغ (ج.م)', 'الوصف', 'المسؤول']
-            st.dataframe(final_exp_table, use_container_width=True, hide_index=True)
-
-        # ----------------- الرسوم البيانية -----------------
-        st.markdown("---")
-        st.subheader("📈 التحليلات والرسوم البيانية")
-
-        if not tx_subset.empty:
+            # الرسوم البيانية
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
                 st.markdown("##### 📉 الإيرادات والعمليات خلال الفترة")
                 fig_trend = go.Figure()
-                fig_trend.add_trace(go.Scatter(
-                    x=days_df['date'], y=days_df['total_revenue'],
-                    mode='lines+markers', name='الإيراد (ج.م)', line=dict(color='#00CC96', width=3)
-                ))
-                fig_trend.add_trace(go.Bar(
-                    x=days_df['date'], y=days_df['total_customers'],
-                    name='عدد العمليات', yaxis='y2', marker_color='rgba(99, 110, 250, 0.45)'
-                ))
-                fig_trend.update_layout(
-                    yaxis=dict(title='الإيراد (ج.م)'),
-                    yaxis2=dict(title='العمليات', overlaying='y', side='right', showgrid=False),
-                    hovermode="x unified", legend=dict(orientation="h", y=1.15),
-                    margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
-                )
+                fig_trend.add_trace(go.Scatter(x=days_df['date'], y=days_df['total_revenue'], mode='lines+markers', name='الإيراد (ج.م)', line=dict(color='#00CC96', width=3)))
+                fig_trend.add_trace(go.Bar(x=days_df['date'], y=days_df['total_customers'], name='عدد العمليات', yaxis='y2', marker_color='rgba(99, 110, 250, 0.45)'))
+                fig_trend.update_layout(yaxis=dict(title='الإيراد (ج.م)'), yaxis2=dict(title='العمليات', overlaying='y', side='right', showgrid=False), hovermode="x unified", legend=dict(orientation="h", y=1.15), margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_trend, use_container_width=True)
 
             with col_chart2:
@@ -1540,166 +1282,28 @@ elif role == "admin":
                 day_order = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"]
                 weekday_stats['day_name'] = pd.Categorical(weekday_stats['day_name'], categories=day_order, ordered=True)
                 weekday_stats = weekday_stats.sort_values('day_name')
-
-                fig_week = px.bar(
-                    weekday_stats, x='day_name', y='total_revenue',
-                    color='total_revenue', custom_data=['total_customers'],
-                    labels={'day_name': 'اليوم', 'total_revenue': 'الإيراد (ج.م)'},
-                    color_continuous_scale='Greens'
-                )
+                fig_week = px.bar(weekday_stats, x='day_name', y='total_revenue', color='total_revenue', custom_data=['total_customers'], labels={'day_name': 'اليوم', 'total_revenue': 'الإيراد (ج.م)'}, color_continuous_scale='Greens')
                 fig_week.update_traces(hovertemplate="<b>%{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
                 fig_week.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_week, use_container_width=True)
 
-            col_chart3, col_chart4 = st.columns(2)
-            with col_chart3:
-                st.markdown("##### 🔥 ساعات الذروة المالية وحركة الزبائن")
-                hourly = tx_subset.groupby('hour').agg(total_revenue=('amount_paid', 'sum'), total_customers=('id', 'count')).reset_index()
-                hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x:02d}:00")
-
-                fig_hour = px.bar(
-                    hourly, x='hour_str', y='total_revenue',
-                    color='total_revenue', custom_data=['total_customers'],
-                    labels={'hour_str': 'الساعة', 'total_revenue': 'إجمالي الإيراد (ج.م)'},
-                    color_continuous_scale='Sunset'
-                )
-                fig_hour.update_traces(hovertemplate="<b>الساعة: %{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
-                fig_hour.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_hour, use_container_width=True)
-
-            with col_chart4:
-                st.markdown("##### 🍩 توزيع المصاريف التشغيلية")
-                if not opex_df.empty:
-                    exp_cat_summary = opex_df.groupby('category')['amount'].sum().reset_index()
-                    fig_pie = px.pie(exp_cat_summary, values='amount', names='category', hole=0.45, color_discrete_sequence=px.colors.qualitative.Pastel)
-                    fig_pie.update_layout(margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', showlegend=True)
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                else:
-                    st.info("لا توجد مصاريف تشغيلية لتوزيعها.")
-
-        # ----------------- سجل المراقبة والإجازات -----------------
+        # ----------------- تصدير الملفات عند الطلب فقط (Lazy-Loaded وسريع) -----------------
         st.markdown("---")
-        st.subheader("🕵️ سجل المراقبة والتعديلات (Audit Logs)")
-        with engine.connect() as conn:
-            audit_filter = "WHERE branch = :b" if selected_branch != "الكل" else ""
-            audit_params = {"b": selected_branch} if selected_branch != "الكل" else {}
-            try:
-                audit_df = pd.read_sql_query(text(f"SELECT timestamp, branch, action_type, entity_type, entity_id, details FROM audit_logs {audit_filter} ORDER BY timestamp DESC LIMIT 50"), conn, params=audit_params)
-                if not audit_df.empty:
-                    st.dataframe(audit_df.rename(columns={
-                        'timestamp': 'الوقت', 'branch': 'الفرع', 'action_type': 'نوع الإجراء',
-                        'entity_type': 'الكيان', 'entity_id': 'رقم المعاملة', 'details': 'التفاصيل'
-                    }), use_container_width=True, hide_index=True)
-                else:
-                    st.info("سجل المراقبة نظيف، لا توجد أي تعديلات أو حذوفات.")
-            except Exception:
-                st.info("سجل المراقبة نظيف.")
-
-        st.markdown("---")
-        st.subheader("🏖️ رصيد وإجازات الموظفين")
-        leave_heaven = get_leave_balance("Heaven")
-        leave_9a = get_leave_balance("9A")
-        col_l1, col_l2 = st.columns(2)
-        with col_l1:
-            st.markdown(f"#### 🌴 فرع Heaven: **{leave_heaven} أيام متبقية**")
-            with st.expander("تسجيل إجازة لموظف Heaven (-1 يوم)", expanded=False):
-                with st.form("leave_heaven_form"):
-                    note_h = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
-                    if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (Heaven)", use_container_width=True):
-                        record_leave("Heaven", note_h)
-                        st.success("تم خصم يوم إجازة بنجاح!")
-                        st.rerun()
-        with col_l2:
-            st.markdown(f"#### 🌴 فرع 9A: **{leave_9a} أيام متبقية**")
-            with st.expander("تسجيل إجازة لموظف 9A (-1 يوم)", expanded=False):
-                with st.form("leave_9a_form"):
-                    note_9a = st.text_input("ملاحظات الإجازة:", value="إجازة اعتيادية")
-                    if st.form_submit_button("🌴 تأكيد خصم يوم إجازة (9A)", use_container_width=True):
-                        record_leave("9A", note_9a)
-                        st.success("تم خصم يوم إجازة بنجاح!")
-                        st.rerun()
-
-        with st.expander("📋 عرض سجل حركات الإجازات بالكامل", expanded=False):
-            with engine.connect() as conn:
-                leaves_df = pd.read_sql_query(text("SELECT timestamp, branch, action_type, days_count, notes FROM employee_leaves ORDER BY timestamp DESC LIMIT 50"), conn)
-                if not leaves_df.empty:
-                    st.dataframe(leaves_df.rename(columns={'timestamp': 'الوقت', 'branch': 'الفرع', 'action_type': 'نوع الحركة', 'days_count': 'الأيام', 'notes': 'الملاحظات'}), use_container_width=True, hide_index=True)
-                else:
-                    st.info("لا توجد حركات إجازات مسجلة بعد.")
-
-        # ----------------- تصدير الملفات بالكامل -----------------
-        st.markdown("---")
-        st.subheader("📥 النسخ الاحتياطي وتصدير البيانات (Backup & Exports)")
-        with engine.connect() as conn:
-            all_backup_tx = pd.read_sql_query(text("""
-                SELECT t.timestamp, d.date, t.prints_count, t.amount_paid, t.branch
-                FROM transactions t JOIN days d ON t.day_id = d.id ORDER BY t.timestamp DESC
-            """), conn)
-            all_backup_exp = pd.read_sql_query(text("""
-                SELECT e.timestamp, d.date, e.branch, e.amount, e.description, e.created_by, e.category
-                FROM expenses e JOIN days d ON e.day_id = d.id ORDER BY e.timestamp DESC
-            """), conn)
-
-        today_date_str = get_egypt_today_str()
-
-        st.markdown("##### 📅 تحميل ملخص المبيعات اليومية (مجمعة باليوم)")
-        if not all_backup_tx.empty:
-            daily_summary_all = all_backup_tx.groupby(['date', 'branch']).agg(
-                total_customers=('timestamp', 'count'),
-                total_prints=('prints_count', 'sum'),
-                total_revenue=('amount_paid', 'sum')
-            ).reset_index()
-            daily_summary_all['date_obj'] = pd.to_datetime(daily_summary_all['date'])
-            daily_summary_all['day_name'] = daily_summary_all['date_obj'].dt.day_name().map(ARABIC_DAYS)
-            daily_summary_all = daily_summary_all.sort_values(by='date', ascending=False)
-            daily_summary_export = daily_summary_all[['date', 'day_name', 'branch', 'total_customers', 'total_prints', 'total_revenue']].rename(columns={
-                'date': 'التاريخ', 'day_name': 'اليوم', 'branch': 'الجهة / الفرع',
-                'total_customers': 'عدد العمليات', 'total_prints': 'إجمالي الورق', 'total_revenue': 'إجمالي الإيراد (ج.م)'
-            })
-
-            col_d1, col_d2, col_d3, col_d4 = st.columns(4)
-            csv_daily_all = daily_summary_export.to_csv(index=False).encode('utf-8-sig')
-            col_d1.download_button("📥 ملخص الأيام (الكل)", data=csv_daily_all, file_name=f"daily_summary_all_{today_date_str}.csv", mime="text/csv", use_container_width=True)
-
-            df_d_heaven = daily_summary_export[daily_summary_export["الجهة / الفرع"] == "Heaven"]
-            if not df_d_heaven.empty:
-                csv_d_heaven = df_d_heaven.to_csv(index=False).encode('utf-8-sig')
-                col_d2.download_button("📥 ملخص أيام Heaven", data=csv_d_heaven, file_name=f"daily_summary_heaven_{today_date_str}.csv", mime="text/csv", use_container_width=True)
-
-            df_d_9a = daily_summary_export[daily_summary_export["الجهة / الفرع"] == "9A"]
-            if not df_d_9a.empty:
-                csv_d_9a = df_d_9a.to_csv(index=False).encode('utf-8-sig')
-                col_d3.download_button("📥 ملخص أيام 9A", data=csv_d_9a, file_name=f"daily_summary_9a_{today_date_str}.csv", mime="text/csv", use_container_width=True)
-
-            df_d_ev = daily_summary_export[daily_summary_export["الجهة / الفرع"] == "Events"]
-            if not df_d_ev.empty:
-                csv_d_ev = df_d_ev.to_csv(index=False).encode('utf-8-sig')
-                col_d4.download_button("📥 ملخص أيام Events", data=csv_d_ev, file_name=f"daily_summary_events_{today_date_str}.csv", mime="text/csv", use_container_width=True)
-
-        st.markdown("##### 📄 تحميل تفاصيل العمليات الفردية والمصروفات")
-        col_b1, col_b2, col_b3, col_b4 = st.columns(4)
-        if not all_backup_tx.empty:
-            all_backup_tx_display = all_backup_tx.rename(columns={
-                'timestamp': 'الوقت', 'date': 'تاريخ يوم العمل', 'prints_count': 'عدد الورق',
-                'amount_paid': 'المبلغ (ج.م)', 'branch': 'الجهة / الفرع'
-            })
-            csv_all = all_backup_tx_display.to_csv(index=False).encode('utf-8-sig')
-            col_b1.download_button("📥 تفاصيل العمليات (الكل)", data=csv_all, file_name=f"all_sales_details_{today_date_str}.csv", mime="text/csv", use_container_width=True)
-
-            df_heaven = all_backup_tx_display[all_backup_tx_display["الجهة / الفرع"] == "Heaven"]
-            if not df_heaven.empty:
-                csv_heaven = df_heaven.to_csv(index=False).encode('utf-8-sig')
-                col_b2.download_button("📥 تفاصيل Heaven", data=csv_heaven, file_name=f"heaven_sales_details_{today_date_str}.csv", mime="text/csv", use_container_width=True)
-
-            df_9a = all_backup_tx_display[all_backup_tx_display["الجهة / الفرع"] == "9A"]
-            if not df_9a.empty:
-                csv_9a = df_9a.to_csv(index=False).encode('utf-8-sig')
-                col_b3.download_button("📥 تفاصيل 9A", data=csv_9a, file_name=f"9a_sales_details_{today_date_str}.csv", mime="text/csv", use_container_width=True)
-
-        if not all_backup_exp.empty:
-            all_backup_exp_display = all_backup_exp.rename(columns={
-                'timestamp': 'الوقت', 'date': 'تاريخ يوم العمل', 'branch': 'الجهة / الفرع',
-                'amount': 'المبلغ (ج.م)', 'description': 'الوصف', 'created_by': 'بواسطة', 'category': 'التصنيف'
-            })
-            csv_exp = all_backup_exp_display.to_csv(index=False).encode('utf-8-sig')
-            col_b4.download_button("📥 تحميل كل المصروفات", data=csv_exp, file_name=f"all_expenses_{today_date_str}.csv", mime="text/csv", use_container_width=True)
+        with st.expander("📥 النسخ الاحتياطي وتصدير البيانات (إكسيل / CSV)", expanded=False):
+            st.caption("يتم تجهيز الملفات فور ضغطك على الزر دون التأثير على سرعة تصفح المنظومة:")
+            col_b1, col_b2 = st.columns(2)
+            today_date_str = get_egypt_today_str()
+            
+            with col_b1:
+                if st.button("📄 تجهيز وتحميل شيت المبيعات بالكامل", use_container_width=True):
+                    with engine.connect() as conn:
+                        tx_exp = pd.read_sql_query(text("SELECT t.timestamp, d.date, t.prints_count, t.amount_paid, t.branch FROM transactions t JOIN days d ON t.day_id = d.id ORDER BY t.timestamp DESC"), conn)
+                    csv_tx = tx_exp.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("📥 اضغط لبدء تنزيل شيت المبيعات", data=csv_tx, file_name=f"sales_{today_date_str}.csv", mime="text/csv", use_container_width=True)
+            
+            with col_b2:
+                if st.button("💸 تجهيز وتحميل شيت المصروفات بالكامل", use_container_width=True):
+                    with engine.connect() as conn:
+                        exp_exp = pd.read_sql_query(text("SELECT e.timestamp, d.date, e.branch, e.amount, e.description, e.created_by, e.category FROM expenses e JOIN days d ON e.day_id = d.id ORDER BY e.timestamp DESC"), conn)
+                    csv_exp = exp_exp.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("📥 اضغط لبدء تنزيل شيت المصروفات", data=csv_exp, file_name=f"expenses_{today_date_str}.csv", mime="text/csv", use_container_width=True)
