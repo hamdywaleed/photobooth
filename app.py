@@ -56,6 +56,39 @@ st.markdown("""
         direction: ltr !important;
     }
 
+    .alert-card-danger {
+        background-color: rgba(255, 75, 75, 0.15);
+        border: 2px solid #ff4b4b;
+        border-radius: 12px;
+        padding: 14px 18px;
+        color: #ff4b4b;
+        font-weight: 800;
+        margin-bottom: 14px;
+        text-align: right;
+        font-size: 16px;
+    }
+    .alert-card-warning {
+        background-color: rgba(255, 165, 0, 0.15);
+        border: 2px solid #ffa500;
+        border-radius: 12px;
+        padding: 14px 18px;
+        color: #ffa500;
+        font-weight: 800;
+        margin-bottom: 14px;
+        text-align: right;
+        font-size: 16px;
+    }
+    .alert-card-success {
+        background-color: rgba(0, 204, 150, 0.15);
+        border: 2px solid #00CC96;
+        border-radius: 12px;
+        padding: 14px 18px;
+        color: #00CC96;
+        font-weight: 800;
+        margin-bottom: 14px;
+        text-align: right;
+        font-size: 16px;
+    }
     .event-card {
         background-color: #1a1d24;
         border: 1px solid #2d323f;
@@ -182,7 +215,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS expenses (
                 {pk_def}, day_id INTEGER, timestamp TEXT NOT NULL, date TEXT NOT NULL,
                 branch TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL,
-                created_by TEXT NOT NULL, category TEXT DEFAULT 'نثريات وتشغيل', event_id INTEGER,
+                created_by TEXT NOT NULL, category TEXT DEFAULT 'نثريات مسواة', event_id INTEGER,
                 paid_from TEXT DEFAULT 'drawer',
                 FOREIGN KEY (day_id) REFERENCES days(id)
             )
@@ -201,9 +234,9 @@ def init_db():
         conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS branch_settings (
                 branch TEXT PRIMARY KEY,
-                rent REAL DEFAULT 0.0,
-                salary REAL DEFAULT 0.0,
-                bills REAL DEFAULT 0.0,
+                rent REAL DEFAULT.0,
+                salary REAL DEFAULT.0,
+                bills REAL DEFAULT.0,
                 cost_per_print REAL DEFAULT 1.1,
                 updated_at TEXT
             )
@@ -220,11 +253,9 @@ def init_db():
                 amount REAL NOT NULL, receiver TEXT NOT NULL, notes TEXT
             )
         """))
-        # الفهارس لضمان السرعة الفورية
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tx_search ON transactions(branch, is_collected, day_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_exp_search ON expenses(branch, category, day_id)"))
 
-        # إعدادات افتراضية للفروع فقط لو الجدول فارغ
         conn.execute(text("""
             INSERT INTO branch_settings (branch, rent, salary, bills, cost_per_print, updated_at)
             VALUES ('9A', 3000, 4000, 650, 1.1, :ts)
@@ -271,34 +302,6 @@ def update_branch_settings(branch_name: str, rent: float, salary: float, bills: 
             SET rent = :r, salary = :s, bills = :bills, cost_per_print = :c, updated_at = :ts
         """), {"b": branch_name, "r": rent, "s": salary, "bills": bills, "c": cost_per_print, "ts": now_str})
 
-# ----------------- LEAVES HELPERS -----------------
-def check_and_add_monthly_allowance():
-    current_month_str = get_egypt_now().strftime("%Y-%m")
-    with engine.begin() as conn:
-        for b in ["Heaven", "9A"]:
-            row = conn.execute(
-                text("SELECT id FROM employee_leaves WHERE branch = :branch AND action_type = 'monthly_allowance' AND notes LIKE :month_pattern"),
-                {"branch": b, "month_pattern": f"%{current_month_str}%"}
-            ).fetchone()
-            if not row:
-                conn.execute(text("""
-                    INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
-                    VALUES (:ts, :branch, 'monthly_allowance', 4, :notes)
-                """), {"ts": get_egypt_now_str(), "branch": b, "notes": f"رصيد إجازات شهر {current_month_str}"})
-
-def get_leave_balance(branch_name: str):
-    with engine.connect() as conn:
-        res = conn.execute(text("SELECT COALESCE(SUM(days_count), 0) FROM employee_leaves WHERE branch = :b"), {"b": branch_name}).fetchone()
-        return res[0] if res else 0
-
-def record_leave(branch_name: str, notes: str = "إجازة اعتيادية"):
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
-            VALUES (:ts, :b, 'leave_taken', -1, :notes)
-        """), {"ts": get_egypt_now_str(), "b": branch_name, "notes": notes})
-
-# ----------------- INVENTORY & INK HELPERS -----------------
 def get_current_stock(target: str):
     with engine.connect() as conn:
         res = conn.execute(
@@ -412,7 +415,6 @@ def record_free_prints(branch_name: str, prints_count: int, notes: str = "طبا
             VALUES (:ts, 'free', :qty, :notes, :b)
         """), {"ts": now_str, "qty": -prints_count, "notes": notes, "b": branch_name})
 
-# ----------------- TRANSACTIONS & SALES -----------------
 def record_transaction(branch_name: str, prints_count: int, amount_paid: float):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
@@ -463,7 +465,6 @@ def update_transaction(tx_id: int, branch_name: str, new_prints: int, new_amount
             return True
     return False
 
-# ----------------- EXPENSES HELPERS -----------------
 def record_expense(branch_name: str, amount: float, description: str, created_by: str, category: str = "نثريات وتشغيل", paid_from: str = "drawer"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
@@ -480,55 +481,6 @@ def record_expense(branch_name: str, amount: float, description: str, created_by
                 VALUES (:ts, :date, 'expense', :amount, :dest, :notes)
             """), {"ts": now_str, "date": today_str, "amount": -amount, "dest": f"{branch_name} - {category}", "notes": description})
 
-def delete_expense(exp_id: int, branch_name: str = None):
-    now_str = get_egypt_now_str()
-    with engine.begin() as conn:
-        branch_clause = "AND branch = :b" if branch_name and branch_name != "All" and branch_name != "الكل" else ""
-        params = {"id": exp_id}
-        if branch_clause:
-            params["b"] = branch_name
-        exp = conn.execute(text(f"SELECT * FROM expenses WHERE id = :id {branch_clause}"), params).mappings().fetchone()
-        if exp:
-            conn.execute(text("""
-                INSERT INTO audit_logs (timestamp, branch, action_type, entity_type, entity_id, details)
-                VALUES (:ts, :b, 'حذف مصروف', 'expense', :exp_id, :details)
-            """), {"ts": now_str, "b": exp["branch"], "exp_id": exp_id, "details": f"حذف مصروف #{exp_id} بقيمة {exp['amount']} ج.م ({exp['description']})"})
-            
-            if exp.get("paid_from") == "safe":
-                conn.execute(text("""
-                    INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                    VALUES (:ts, :date, 'refund', :amount, 'استرجاع مصروف محذوف', :notes)
-                """), {"ts": now_str, "date": exp["date"], "amount": exp["amount"], "notes": f"استرجاع لحذف المصروف #{exp_id}"})
-
-            conn.execute(text("DELETE FROM expenses WHERE id = :id"), {"id": exp_id})
-            return True
-    return False
-
-def update_expense(exp_id: int, new_amount: float, new_desc: str, branch_name: str = None):
-    now_str = get_egypt_now_str()
-    with engine.begin() as conn:
-        branch_clause = "AND branch = :b" if branch_name and branch_name != "All" and branch_name != "الكل" else ""
-        params = {"id": exp_id}
-        if branch_clause:
-            params["b"] = branch_name
-        exp = conn.execute(text(f"SELECT * FROM expenses WHERE id = :id {branch_clause}"), params).mappings().fetchone()
-        if exp:
-            diff = new_amount - float(exp["amount"])
-            if exp.get("paid_from") == "safe" and diff != 0:
-                conn.execute(text("""
-                    INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                    VALUES (:ts, :date, 'adjust', :amount, 'تعديل مصروف', :notes)
-                """), {"ts": now_str, "date": exp["date"], "amount": -diff, "notes": f"تعديل المصروف #{exp_id}"})
-
-            conn.execute(text("""
-                INSERT INTO audit_logs (timestamp, branch, action_type, entity_type, entity_id, details)
-                VALUES (:ts, :b, 'تعديل مصروف', 'expense', :exp_id, :details)
-            """), {"ts": now_str, "b": exp["branch"], "exp_id": exp_id, "details": f"تعديل مصروف #{exp_id} من ({exp['amount']} ج) إلى ({new_amount} ج)"})
-            conn.execute(text("UPDATE expenses SET amount = :amount, description = :desc WHERE id = :id"), {"amount": new_amount, "desc": new_desc, "id": exp_id})
-            return True
-    return False
-
-# ----------------- SAFE & CUSTODY -----------------
 def record_safe_deposit(amount: float, notes: str = "إيداع كاش"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
@@ -594,6 +546,17 @@ def get_current_safe_balance():
     with engine.connect() as conn:
         res = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM safe_transactions")).fetchone()
         return float(res[0]) if res else 0.0
+
+# ----------------- STOCK ALERT HELPER -----------------
+def render_stock_alert(stock_count: int, branch_name: str = ""):
+    """ترجع كارت تنبيه ملون بناءً على رصيد الورق المطلوب"""
+    prefix = f"فرع {branch_name}: " if branch_name else "المخزن العام: "
+    if stock_count < 200:
+        st.markdown(f'<div class="alert-card-danger">🚨 تنبيه عاجل ({prefix}): رصيد الورق منخفض جداً ({stock_count} ورقة)! أقل من 200 ورقة.</div>', unsafe_allow_html=True)
+    elif 200 <= stock_count <= 300:
+        st.markdown(f'<div class="alert-card-warning">⚠️ تنبيه ({prefix}): رصيد الورق متوسط ({stock_count} ورقة) بين 200 و 300 ورقة. استعد لإعادة الطلب.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="alert-card-success">✅ حالة الورق ({prefix}) ممتازة: متوفر {stock_count} ورقة (أكثر من 300).</div>', unsafe_allow_html=True)
 
 # ----------------- EVENTS HELPERS -----------------
 def create_event(event_date: str, client_name: str, location: str, device: str, hours: int, start_time: str, end_time: str, total_amount: float, deposit_paid: float, notes: str):
@@ -765,6 +728,10 @@ if role == "employee":
         st.caption(f"🕒 التوقيت: **{get_egypt_now().strftime('%I:%M %p')}**")
     with top_c4:
         st.button("🚪 خروج", on_click=logout, use_container_width=True)
+    st.markdown("---")
+
+    # عرض تنبيه الورق للموظف في شاشته الرئيسية
+    render_stock_alert(current_stock, branch)
     st.markdown("---")
 
     st.markdown("""
@@ -950,6 +917,12 @@ elif role == "admin":
         ink_heaven_refills = get_ink_refills("Heaven")
         ink_9a_refills = get_ink_refills("9A")
 
+        # تنبيهات الورق للأدمن في قسم المخزن
+        render_stock_alert(int(warehouse_sheets), "المخزن العام")
+        render_stock_alert(stock_9a, "9A")
+        render_stock_alert(stock_heaven, "Heaven")
+        st.markdown("---")
+
         inv_c1, inv_c2, inv_c3 = st.columns(3)
         inv_c1.metric("🏢 ورق المخزن العام", f"{warehouse_packets:,.1f} باكتة", f"{warehouse_sheets:,} ورقة")
         inv_c2.metric("🏪 ورق فرع 9A", f"{stock_9a:,} ورقة")
@@ -1119,7 +1092,6 @@ elif role == "admin":
 
     # ================= 2.D الفروع والتحليل المالي =================
     else:
-        # --- تحسين السرعة: سحب كل البيانات في دفعة واحدة (Batch Query) ---
         with engine.connect() as conn:
             all_tx_raw = pd.read_sql_query(text("SELECT t.*, d.date FROM transactions t JOIN days d ON t.day_id = d.id ORDER BY t.timestamp ASC"), conn)
             all_exp_raw = pd.read_sql_query(text("SELECT e.*, d.date as operational_date FROM expenses e JOIN days d ON e.day_id = d.id ORDER BY e.timestamp ASC"), conn)
@@ -1140,7 +1112,6 @@ elif role == "admin":
         with top_f2:
             date_range = st.date_input("📅 الفترة الزمنية:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
 
-        # --- تحسين السرعة: فلترة فورية بالـ Pandas بدون اتصالات متكررة ---
         if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
             start_dt, end_dt = date_range
             mask_tx = (pd.to_datetime(all_tx_raw['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_raw['date']).dt.date <= end_dt) if not all_tx_raw.empty else pd.Series(dtype=bool)
@@ -1184,6 +1155,15 @@ elif role == "admin":
 
         waste_count = get_waste_count(selected_branch)
         free_count = get_free_count(selected_branch)
+
+        # ----------------- تنبيهات الورق للأدمن في الداشبورد المالية -----------------
+        if selected_branch in ["9A", "Heaven"]:
+            branch_stock = get_current_stock(selected_branch)
+            render_stock_alert(branch_stock, selected_branch)
+        elif selected_branch == "الكل":
+            render_stock_alert(get_current_stock("9A"), "9A")
+            render_stock_alert(get_current_stock("Heaven"), "Heaven")
+        st.markdown("---")
 
         # ----------------- المؤشرات العلوية -----------------
         st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية (P&L)")
@@ -1427,6 +1407,7 @@ elif role == "admin":
 
         # ----------------- تصدير الملفات عند الطلب فقط (سريع وخفيف) -----------------
         st.markdown("---")
+        st.expander("📥 النسخ الاحتياطي وتصدير البيانات (إكسيل / CSV)", expanded=False)
         with st.expander("📥 النسخ الاحتياطي وتصدير البيانات (إكسيل / CSV)", expanded=False):
             st.caption("يتم تجهيز الملفات فور ضغطك على الزر فقط:")
             col_b1, col_b2 = st.columns(2)
