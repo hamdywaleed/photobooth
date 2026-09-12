@@ -302,7 +302,7 @@ def update_branch_settings(branch_name: str, rent: float, salary: float, bills: 
             SET rent = :r, salary = :s, bills = :bills, cost_per_print = :c, updated_at = :ts
         """), {"b": branch_name, "r": rent, "s": salary, "bills": bills, "c": cost_per_print, "ts": now_str})
 
-# ----------------- LEAVES HELPERS (تمت إضافتها لمنع الخطأ) -----------------
+# ----------------- LEAVES HELPERS -----------------
 def check_and_add_monthly_allowance():
     current_month_str = get_egypt_now().strftime("%Y-%m")
     with engine.begin() as conn:
@@ -628,15 +628,25 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
     now_str = get_egypt_now_str()
     cfg = get_branch_settings(from_branch if from_branch != "Warehouse" else "9A")
     cost_per_p = float(cfg.get("cost_per_print", 1.1))
+    
+    # 1. تكلفة الورق تدخل في حساب ربحية الإيفنت فقط
     paper_cost = prints_count * cost_per_p
-    total_exp = paper_cost + transport_cost + worker_cost
+    
+    # 2. المصاريف النقدية الفعلية التي تخرج من الخزينة (المواصلات + أجر الموظف فقط بدون ثمن الورق)
+    cash_expenses = transport_cost + worker_cost
+    
+    # إجمالي المصاريف المسجلة في تقرير الإيفنت (لإظهار الربحية بدقة شاملة ثمن الورق)
+    total_exp_for_report = paper_cost + cash_expenses
+    
     with engine.begin() as conn:
         ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
         if ev:
             rem = float(ev["remaining_amount"])
             event_date = ev["event_date"]
             total_rev = float(ev["total_amount"])
-            profit = total_rev - total_exp
+            
+            # صافي الربح الحقيقي (الإيراد - تكلفة الورق - المواصلات - الموظف)
+            profit = total_rev - total_exp_for_report
             d_id = get_or_create_day_id(event_date)
             
             if rem > 0:
@@ -655,16 +665,17 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
                     VALUES (:ts, 'consumption', :qty, :notes, :branch)
                 """), {"ts": now_str, "qty": -prints_count, "notes": f"استهلاك ورق إيفنت #{event_id}", "branch": from_branch})
 
-            if total_exp > 0:
-                desc = f"مصروف إيفنت #{event_id} ({ev['client_name']}): ورق={paper_cost:,.0f}ج، مواصلات={transport_cost:,.0f}ج، موظف={worker_cost:,.0f}ج"
+            # تسجيل المصاريف النقدية الفعلية فقط في الخزينة (المواصلات والموظف) دون خصم ثمن الورق كاش
+            if cash_expenses > 0:
+                desc = f"مصروفات نقدية إيفنت #{event_id} ({ev['client_name']}): مواصلات={transport_cost:,.0f}ج، موظف={worker_cost:,.0f}ج"
                 conn.execute(text("""
                     INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, event_id, paid_from)
                     VALUES (:day_id, :ts, :date, 'Events', :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات', :ev_id, 'safe')
-                """), {"day_id": d_id, "ts": now_str, "date": event_date, "amount": total_exp, "desc": desc, "ev_id": event_id})
+                """), {"day_id": d_id, "ts": now_str, "date": event_date, "amount": cash_expenses, "desc": desc, "ev_id": event_id})
                 conn.execute(text("""
                     INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
                     VALUES (:ts, :date, 'event_expense', :amount, 'مصاريف إيفنت', :notes)
-                """), {"ts": now_str, "date": event_date, "amount": -total_exp, "notes": desc})
+                """), {"ts": now_str, "date": event_date, "amount": -cash_expenses, "notes": desc})
 
             conn.execute(text("""
                 UPDATE events
@@ -672,7 +683,10 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
                     prints_used = :prints, paper_cost = :p_cost, transport_cost = :t_cost,
                     worker_cost = :w_cost, total_expenses = :tot_exp, net_profit = :profit
                 WHERE id = :id
-            """), {"prints": prints_count, "p_cost": paper_cost, "t_cost": transport_cost, "w_cost": worker_cost, "tot_exp": total_exp, "profit": profit, "id": event_id})
+            """), {
+                "prints": prints_count, "p_cost": paper_cost, "t_cost": transport_cost, 
+                "w_cost": worker_cost, "tot_exp": total_exp_for_report, "profit": profit, "id": event_id
+            })
 
 def delete_event(event_id: int):
     now_str = get_egypt_now_str()
@@ -756,7 +770,6 @@ if role == "employee":
         st.button("🚪 خروج", on_click=logout, use_container_width=True)
     st.markdown("---")
 
-    # عرض تنبيه الورق في شاشة الموظف
     render_stock_alert(current_stock, branch)
     st.markdown("---")
 
@@ -943,7 +956,6 @@ elif role == "admin":
         ink_heaven_refills = get_ink_refills("Heaven")
         ink_9a_refills = get_ink_refills("9A")
 
-        # تنبيهات الورق في قسم المخزن للأدمن
         render_stock_alert(int(warehouse_sheets), "المخزن العام")
         render_stock_alert(stock_9a, "9A")
         render_stock_alert(stock_heaven, "Heaven")
@@ -1182,7 +1194,6 @@ elif role == "admin":
         waste_count = get_waste_count(selected_branch)
         free_count = get_free_count(selected_branch)
 
-        # ----------------- تنبيهات الورق للأدمن في الداشبورد المالية -----------------
         if selected_branch in ["9A", "Heaven"]:
             branch_stock = get_current_stock(selected_branch)
             render_stock_alert(branch_stock, selected_branch)
@@ -1191,7 +1202,6 @@ elif role == "admin":
             render_stock_alert(get_current_stock("Heaven"), "Heaven")
         st.markdown("---")
 
-        # ----------------- المؤشرات العلوية -----------------
         st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية (P&L)")
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
@@ -1207,7 +1217,6 @@ elif role == "admin":
         kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
         st.markdown("---")
 
-        # ----------------- تسليم وتوريد العهدة -----------------
         st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
         b_list = ["9A", "Heaven"] if selected_branch == "الكل" else ([selected_branch] if selected_branch in ["9A", "Heaven"] else [])
         has_pending = False
@@ -1273,7 +1282,6 @@ elif role == "admin":
                             record_expense(ad_branch, float(ad_amount), ad_desc.strip(), "المدير", ad_cat, "safe")
                             st.rerun()
 
-        # ----------------- جداول اليوم الحالي (مبيعات ومصروفات اليوم) -----------------
         st.markdown("---")
         today_b_str = get_egypt_today_str()
         st.subheader(f"⚡ مبيعات ومصروفات يوم العمل الحالي ({selected_branch}) - {today_b_str}")
@@ -1309,7 +1317,6 @@ elif role == "admin":
             else:
                 st.info("لا توجد مصروفات مسجلة اليوم.")
 
-        # ----------------- جدول سلوك العمليات والربح اليومي -----------------
         st.markdown("---")
         if not tx_subset.empty:
             days_df = tx_subset.groupby('date').agg(
@@ -1350,7 +1357,6 @@ elif role == "admin":
             display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
             st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-            # الرسوم البيانية الأربعة
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
                 st.markdown("##### 📉 الإيرادات والعمليات خلال الفترة")
@@ -1391,7 +1397,6 @@ elif role == "admin":
                 else:
                     st.info("لا توجد مصاريف تشغيلية لتوزيعها.")
 
-        # ----------------- سجل المراقبة والإجازات -----------------
         st.markdown("---")
         st.subheader("🕵️ سجل المراقبة والتعديلات (Audit Logs)")
         with engine.connect() as conn:
@@ -1431,7 +1436,6 @@ elif role == "admin":
                         record_leave("9A", note_9a)
                         st.rerun()
 
-        # ----------------- تصدير الملفات عند الطلب فقط (سريع وخفيف) -----------------
         st.markdown("---")
         with st.expander("📥 النسخ الاحتياطي وتصدير البيانات (إكسيل / CSV)", expanded=False):
             st.caption("يتم تجهيز الملفات فور ضغطك على الزر فقط:")
