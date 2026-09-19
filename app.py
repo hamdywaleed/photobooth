@@ -1443,8 +1443,18 @@ elif role == "admin":
                 st.info("لا توجد مصروفات مسجلة اليوم.")
 
         st.markdown("---")
+        # 1. توليد كل الأيام في النطاق الزمني المختار عشان مفيش يوم يسقط لو مبيعاته صفر
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            d_start, d_end = date_range
+        else:
+            d_start, d_end = min_date, max_date
+
+        all_calendar_days = pd.date_range(start=d_start, end=d_end).strftime('%Y-%m-%d').tolist()
+        base_days_df = pd.DataFrame({'date': all_calendar_days})
+
+        # 2. تجميع الإيرادات والورق لكل يوم
         if not tx_subset.empty:
-            days_df = tx_subset.groupby('date').agg(
+            days_tx_agg = tx_subset.groupby('date').agg(
                 first_customer_time=('timestamp', 'min'),
                 last_customer_time=('timestamp', 'max'),
                 total_customers=('id', 'count'),
@@ -1452,56 +1462,75 @@ elif role == "admin":
                 total_revenue=('amount_paid', 'sum')
             ).reset_index()
 
-            tx_subset['hour'] = pd.to_datetime(tx_subset['timestamp']).dt.hour
-            peak_hours = tx_subset.groupby(['date', 'hour'])['id'].count().reset_index()
+            # ساعات الذروة
+            tx_subset_tmp = tx_subset.copy()
+            tx_subset_tmp['hour'] = pd.to_datetime(tx_subset_tmp['timestamp']).dt.hour
+            peak_hours = tx_subset_tmp.groupby(['date', 'hour'])['id'].count().reset_index()
             peak_hours = peak_hours.sort_values(['date', 'id'], ascending=[True, False]).drop_duplicates(subset=['date'])
             peak_hours = peak_hours.rename(columns={'hour': 'peak_hour'})[['date', 'peak_hour']]
-
-            behavior_df = days_df.merge(peak_hours, on='date', how='left')
-            behavior_df['date_obj'] = pd.to_datetime(behavior_df['date'])
-            behavior_df['day_name'] = behavior_df['date_obj'].dt.day_name().map(ARABIC_DAYS)
-
-            day_exp_map = exp_subset.groupby('operational_date')['amount'].sum().to_dict() if not exp_subset.empty else {}
-            behavior_df['day_expenses'] = behavior_df['date'].map(day_exp_map).fillna(0.0)
-
-            # الثابت اليومي الصحيح والثابت لكل فرع بدون قسمة عائمة
-            fixed_daily_per_branch = 255.0 if selected_branch == "9A" else (167.0 if selected_branch == "Heaven" else (0.0 if selected_branch == "Events" else 422.0))
-            cfg_cost_val = float(get_branch_settings("9A").get("cost_per_print", 1.1))
-            behavior_df['paper_cost'] = behavior_df['total_prints'] * cfg_cost_val
             
-            # حساب الربح اليومي الصريح
-            behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - fixed_daily_per_branch
+            days_tx_agg = days_tx_agg.merge(peak_hours, on='date', how='left')
+        else:
+            days_tx_agg = pd.DataFrame(columns=['date', 'first_customer_time', 'last_customer_time', 'total_customers', 'total_prints', 'total_revenue', 'peak_hour'])
 
-            def extract_time(ts):
-                if pd.isna(ts): return "-"
-                return format_arabic_time(pd.to_datetime(ts).strftime('%I:%M %p'))
+        # دمج كل الأيام مع جدول المعاملات (عشان الأيام اللي مفيش فيها مبيعات تظهر بـ 0)
+        behavior_df = base_days_df.merge(days_tx_agg, on='date', how='left')
+        behavior_df['total_customers'] = behavior_df['total_customers'].fillna(0)
+        behavior_df['total_prints'] = behavior_df['total_prints'].fillna(0)
+        behavior_df['total_revenue'] = behavior_df['total_revenue'].fillna(0.0)
 
-            behavior_df['first_time'] = behavior_df['first_customer_time'].apply(extract_time)
-            behavior_df['last_time'] = behavior_df['last_customer_time'].apply(extract_time)
-            behavior_df['peak_str'] = behavior_df['peak_hour'].apply(lambda x: f"{int(x)}:00" if pd.notna(x) else "-")
+        behavior_df['date_obj'] = pd.to_datetime(behavior_df['date'])
+        behavior_df['day_name'] = behavior_df['date_obj'].dt.day_name().map(ARABIC_DAYS)
 
-            st.subheader(f"📋 إيرادات وسلوك العمليات والربح اليومي ({selected_branch})")
-            display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue', 'day_expenses', 'daily_net_profit']].copy()
-            display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
+        # نثريات اليوم
+        day_exp_map = exp_subset.groupby('operational_date')['amount'].sum().to_dict() if not exp_subset.empty else {}
+        behavior_df['day_expenses'] = behavior_df['date'].map(day_exp_map).fillna(0.0)
 
-            # تقريب الأرقام لأعلى باستخدام math.ceil وإزالة الأصفار العشرية الزائدة
-            display_df['الإيراد (ج.م)'] = display_df['الإيراد (ج.م)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
-            display_df['نثريات (ج)'] = display_df['نثريات (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
-            display_df['صافي ربح اليوم (ج)'] = display_df['صافي ربح اليوم (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
+        # الثابت اليومي الصحيح حسب النطاق أو الفرع
+        if selected_branch == "9A":
+            fixed_daily_per_branch = 255.0
+        elif selected_branch == "Heaven":
+            fixed_daily_per_branch = 167.0
+        elif selected_branch == "Events":
+            fixed_daily_per_branch = 0.0
+        else: # الكل (مجموع ثوابت الفرعين 255 + 167 = 422)
+            fixed_daily_per_branch = 422.0
 
-            # دالة تلوين الصفوف في الجدول اليومي (أخضر للمكسب، أحمر للخسارة، رمادي للتعادل)
-            def color_profit_rows(row):
-                val = row['صافي ربح اليوم (ج)']
-                if val > 0:
-                    return ['background-color: rgba(0, 204, 150, 0.2); color: #00CC96; font-weight: bold;'] * len(row)
-                elif val < 0:
-                    return ['background-color: rgba(255, 75, 75, 0.2); color: #ff4b4b; font-weight: bold;'] * len(row)
-                else:
-                    return ['background-color: rgba(128, 128, 128, 0.2); color: #d3d3d3; font-weight: bold;'] * len(row)
+        cfg_cost_val = float(get_branch_settings("9A").get("cost_per_print", 1.1))
+        behavior_df['paper_cost'] = behavior_df['total_prints'] * cfg_cost_val
+        
+        # صافي ربح اليوم (لو مفيش إيراد ولا نثريات هيطلع بالسالب مساوي للثابت اليومي تماماً)
+        behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - fixed_daily_per_branch
 
-            styled_df = display_df.style.apply(color_profit_rows, axis=1)
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        def extract_time(ts):
+            if pd.isna(ts): return "-"
+            return format_arabic_time(pd.to_datetime(ts).strftime('%I:%M %p'))
 
+        behavior_df['first_time'] = behavior_df['first_customer_time'].apply(extract_time)
+        behavior_df['last_time'] = behavior_df['last_customer_time'].apply(extract_time)
+        behavior_df['peak_str'] = behavior_df['peak_hour'].apply(lambda x: f"{int(x)}:00" if pd.notna(x) else "-")
+
+        st.subheader(f"📋 إيرادات وسلوك العمليات والربح اليومي ({selected_branch})")
+        display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue', 'day_expenses', 'daily_net_profit']].copy()
+        display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
+
+        # تقريب الأرقام لأعلى وإزالة الأصفار العشرية
+        display_df['الإيراد (ج.م)'] = display_df['الإيراد (ج.م)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
+        display_df['نثريات (ج)'] = display_df['نثريات (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
+        display_df['صافي ربح اليوم (ج)'] = display_df['صافي ربح اليوم (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
+
+        # تلوين الصفوف (أخضر للمكسب، أحمر للخسارة وعجز الثابت)
+        def color_profit_rows(row):
+            val = row['صافي ربح اليوم (ج)']
+            if val > 0:
+                return ['background-color: rgba(0, 204, 150, 0.2); color: #00CC96; font-weight: bold;'] * len(row)
+            elif val < 0:
+                return ['background-color: rgba(255, 75, 75, 0.2); color: #ff4b4b; font-weight: bold;'] * len(row)
+            else:
+                return ['background-color: rgba(128, 128, 128, 0.2); color: #d3d3d3; font-weight: bold;'] * len(row)
+
+        styled_df = display_df.style.apply(color_profit_rows, axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
                 st.markdown("##### 📉 الإيرادات والعمليات خلال الفترة")
