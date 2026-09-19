@@ -1321,8 +1321,6 @@ elif role == "admin":
             st.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
         with kpi8:
             st.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
-
-        st.markdown("#### 📊 مؤشرات الأداء الحية (KPI Bars)")
         bar1, bar2, bar3 = st.columns(3)
         with bar1:
             st.metric("🎯 نسبة تغطية المصاريف والتزامات", f"{break_even_pct:.1f}%")
