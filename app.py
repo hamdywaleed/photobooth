@@ -966,7 +966,7 @@ elif role == "admin":
         st.markdown("---")
         col_in1, col_in2 = st.columns(2)
         with col_in1:
-            st.markdown("### 📥 استلاستلام وتوريد شحنة جديدة للمخزن")
+            st.markdown("### 📥 استلام وتوريد شحنة جديدة للمخزن")
             with st.form("new_stock_form", clear_on_submit=True):
                 p_qty = st.number_input("عدد باكتات الورق (1 باكتة = 100 ورقة):", min_value=0, value=0, step=10)
                 ink_qty = st.number_input("عدد علب الحبر (العلبة = 2 ملوة طابعة):", min_value=0.0, value=0.0, step=0.5)
@@ -1191,7 +1191,7 @@ elif role == "admin":
         # 1. إجمالي الالتزامات والمستهدف الشهري (ثابتة + متغيرة تراكمية + ورق)
         total_obligations = monthly_fixed_total + paid_opex_total + cogs_total
         
-        # 2. المصاريف والالتزامات الفعلية الدفعت (متغيرة وتراكمية ومصاريف كاش + تكلفة الورق الفعلي)
+        # 2. المصاريف والالتزامات الفعلية (نثريات كاش + تكلفة الورق الفعلي)
         actual_cash_and_paper_spent = paid_opex_total + cogs_total
 
         net_profit = total_rev_all - total_obligations
@@ -1242,10 +1242,43 @@ elif role == "admin":
 
         st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية المؤشرة (Proactive P&L)")
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
-        kpi2.metric("🖨️ تكلفة الورق الفعلي", f"{cogs_total:,.0f} ج.م", delta=f"{total_prints_all:,} ورقة", delta_color="off")
-        kpi3.metric("🏢 إجمالي الالتزامات المستهدفة", f"{total_obligations:,.0f} ج.م", delta="ثابتة + متغيرة + ورق", delta_color="normal")
-        kpi4.metric("📈 صافي الأرباح الصافية", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
+        
+        with kpi1:
+            st.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
+            with st.popover("ℹ️ تفاصيل الإيرادات"):
+                st.markdown("##### 💰 تقسيم الإيرادات الكلية")
+                rev_9a = tx_subset[tx_subset['branch']=='9A']['amount_paid'].sum() if not tx_subset.empty else 0
+                rev_heaven = tx_subset[tx_subset['branch']=='Heaven']['amount_paid'].sum() if not tx_subset.empty else 0
+                rev_events = tx_subset[tx_subset['branch']=='Events']['amount_paid'].sum() if not tx_subset.empty else 0
+                st.write(f"- مبيعات فرع 9A: {rev_9a:,.0f} ج")
+                st.write(f"- مبيعات فرع Heaven: {rev_heaven:,.0f} ج")
+                st.write(f"- إيرادات الإيفنتات الخارجية: {rev_events:,.0f} ج")
+
+        with kpi2:
+            st.metric("🖨️ تكلفة الورق الفعلي", f"{cogs_total:,.0f} ج.م", delta=f"{total_prints_all:,} ورقة", delta_color="off")
+            with st.popover("ℹ️ تفاصيل استهلاك الورق"):
+                st.markdown("##### 🖨️ تقسيم استهلاك الورق")
+                normal_prints = total_prints_all - waste_count - free_count
+                st.write(f"- ورق المبيعات العادية: {normal_prints:,} ورقة")
+                st.write(f"- ورق تالف / هالك: {waste_count:,} ورقة")
+                st.write(f"- ورق طباعة مجانية / ضيافة: {free_count:,} ورقة")
+                st.write(f"- إجمالي الورق المستهلك: {total_prints_all:,} ورقة")
+
+        with kpi3:
+            st.metric("🏢 إجمالي الالتزامات المستهدفة", f"{total_obligations:,.0f} ج.م", delta="ثابتة + متغيرة + ورق", delta_color="normal")
+            with st.popover("ℹ️ تفاصيل الالتزامات"):
+                st.markdown("##### 💸 تفاصيل الالتزامات والنثريات")
+                st.write(f"- المصاريف الثابتة الشهرية: {monthly_fixed_total:,.0f} ج")
+                st.write(f"- إجمالي النثريات المتغيرة المسجلة: {paid_opex_total:,.0f} ج")
+                st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
+
+        with kpi4:
+            st.metric("📈 صافي الأرباح الصافية", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
+            with st.popover("ℹ️ تفاصيل صافي الأرباح"):
+                st.markdown("##### 📈 معادلة صافي الربح")
+                st.write(f"- إجمالي الإيرادات: {total_rev_all:,.0f} ج")
+                st.write(f"- ناقص إجمالي الالتزامات والمصاريف: {total_obligations:,.0f} ج")
+                st.write(f"- صافي الربح اللحظي: {net_profit:,.0f} ج")
 
         st.markdown("#### 📊 مؤشرات الأداء الحية (KPI Bars)")
         bar1, bar2, bar3 = st.columns(3)
@@ -1266,17 +1299,54 @@ elif role == "admin":
         day_kpi2.metric("🚀 أيام الأرباح للشهر", f"{profit_days_count} يوم")
         day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
         
-        # الرقمين المطلوبين مفرودين بوضوح:
         day_kpi4.metric("🎯 إجمالي المستهدف الشهري", f"{total_obligations:,.0f} ج.م", delta="ثابت + نثريات + ورق")
+        with day_kpi4.popover("ℹ️ تفاصيل المستهدف"):
+            st.markdown("##### 🎯 مكونات المستهدف الشهري")
+            st.write(f"- المصاريف الثابتة: {monthly_fixed_total:,.0f} ج")
+            st.write(f"- النثريات المسجلة: {paid_opex_total:,.0f} ج")
+            st.write(f"- تكلفة الورق: {cogs_total:,.0f} ج")
+
         day_kpi5.metric("💸 المصاريف الفعلية + الورق", f"{actual_cash_and_paper_spent:,.0f} ج.م", delta="المنصرف الفعلي")
+        with day_kpi5.popover("ℹ️ تفاصيل المصاريف الفعلية"):
+            st.markdown("##### 💸 تفاصيل المنصرف الفعلي")
+            st.write(f"- النثريات الفعلية المدفوعة: {paid_opex_total:,.0f} ج")
+            st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
+            with engine.connect() as conn:
+                recent_exp = pd.read_sql_query(text("SELECT timestamp, branch, amount, description FROM expenses ORDER BY timestamp DESC LIMIT 5"), conn)
+            if not recent_exp.empty:
+                st.markdown("آخر المصروفات المسجلة:")
+                st.dataframe(recent_exp, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.markdown("#### 💵 حركة السيولة والأدراج")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
-        kpi5.metric("🏦 الكاش بالخزينة الفعلي", f"{safe_cash:,.0f} ج.م", delta="رصيد الخزينة الفعلي")
-        kpi6.metric("⏳ عهدة معلقة بالأدراج (صافي)", f"{net_uncollected_custody:,.0f} ج.م", delta="مطلوب توريدها", delta_color="off")
-        kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
-        kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
+        
+        with kpi5:
+            st.metric("🏦 الكاش بالخزينة الفعلي", f"{safe_cash:,.0f} ج.م", delta="رصيد الخزينة الفعلي")
+            with st.popover("ℹ️ تفاصيل الخزينة"):
+                st.markdown("##### 🏦 ملخص حركات الخزينة الأخيرة")
+                with engine.connect() as conn:
+                    safe_logs = pd.read_sql_query(text("SELECT timestamp, type, amount, source_destination, notes FROM safe_transactions ORDER BY timestamp DESC LIMIT 5"), conn)
+                if not safe_logs.empty:
+                    st.dataframe(safe_logs, use_container_width=True, hide_index=True)
+                else:
+                    st.write("لا توجد حركات مسجلة بالخزينة بعد.")
+
+        with kpi6:
+            st.metric("⏳ عهدة معلقة بالأدراج (صافي)", f"{net_uncollected_custody:,.0f} ج.م", delta="مطلوب توريدها", delta_color="off")
+            with st.popover("ℹ️ تفاصيل عهدة الأدراج"):
+                st.markdown("##### ⏳ عهدة الأدراج المتبقية لكل فرع")
+                for b_name in ["9A", "Heaven"]:
+                    with engine.connect() as conn:
+                        u_s = conn.execute(text("SELECT COALESCE(SUM(amount_paid), 0) FROM transactions WHERE branch = :b AND is_collected = 0"), {"b": b_name}).fetchone()[0]
+                        u_e = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'"), {"b": b_name}).fetchone()[0]
+                    net_b = float(u_s) - float(u_e)
+                    st.write(f"- فرع {b_name}: {net_b:,.0f} ج (مبيعات غير مسواة: {u_s:,.0f} ج - نثريات درج: {u_e:,.0f} ج)")
+
+        with kpi7:
+            st.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
+        with kpi8:
+            st.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
         st.markdown("---")
 
         st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
@@ -1420,10 +1490,12 @@ elif role == "admin":
             st.subheader(f"📋 إيرادات وسلوك العمليات والربح اليومي ({selected_branch})")
             display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue', 'day_expenses', 'daily_net_profit']].copy()
             display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
-            # تقريب الأرقام لأعلى وإزالة العلامات العشرية والأصفار الزائدة
+
+            # تقريب الأرقام لأعلى باستخدام math.ceil وإزالة الأصفار العشرية الزائدة
             display_df['الإيراد (ج.م)'] = display_df['الإيراد (ج.م)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
             display_df['نثريات (ج)'] = display_df['نثريات (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
             display_df['صافي ربح اليوم (ج)'] = display_df['صافي ربح اليوم (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
+
             # دالة تلوين الصفوف في الجدول اليومي (أخضر للمكسب، أحمر للخسارة، رمادي للتعادل)
             def color_profit_rows(row):
                 val = row['صافي ربح اليوم (ج)']
