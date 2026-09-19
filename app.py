@@ -1293,8 +1293,6 @@ elif role == "admin":
                 st.write(f"- ناقص إجمالي المستهدف الشهري: {total_obligations:,.0f} ج")
                 st.write(f"- صافي الربح اللحظي: {net_profit:,.0f} ج")
         
-        st.markdown("---")
-        st.markdown("#### 💵 حركة السيولة والأدراج")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
         
         with kpi5:
