@@ -1554,8 +1554,14 @@ elif role == "admin":
         col_chart3, col_chart4 = st.columns(2)
         with col_chart3:
                 st.markdown("##### 🔥 ساعات الذروة المالية وحركة الزبائن")
-                hourly = tx_subset.groupby('hour').agg(total_revenue=('amount_paid', 'sum'), total_customers=('id', 'count')).reset_index()
-                hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x:02d}:00")
+                tx_hour_df = tx_subset.copy()
+                if not tx_hour_df.empty:
+                    tx_hour_df['hour'] = pd.to_datetime(tx_hour_df['timestamp']).dt.hour
+                    hourly = tx_hour_df.groupby('hour').agg(total_revenue=('amount_paid', 'sum'), total_customers=('id', 'count')).reset_index()
+                    hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x:02d}:00")
+                else:
+                    hourly = pd.DataFrame(columns=['hour', 'total_revenue', 'total_customers', 'hour_str'])
+                
                 fig_hour = px.bar(hourly, x='hour_str', y='total_revenue', color='total_revenue', custom_data=['total_customers'], labels={'hour_str': 'الساعة', 'total_revenue': 'إجمالي الإيراد (ج.م)'}, color_continuous_scale='Sunset')
                 fig_hour.update_traces(hovertemplate="<b>الساعة: %{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
                 fig_hour.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
