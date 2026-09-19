@@ -1344,7 +1344,7 @@ elif role == "admin":
         day_kpi2.metric("🚀 أيام الأرباح للشهر", f"{profit_days_count} يوم")
         day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
 
-                st.markdown("---")
+        st.markdown("---")
 
         st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
         b_list = ["9A", "Heaven"] if selected_branch == "الكل" else ([selected_branch] if selected_branch in ["9A", "Heaven"] else [])
