@@ -1531,8 +1531,8 @@ elif role == "admin":
 
         styled_df = display_df.style.apply(color_profit_rows, axis=1)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            col_chart1, col_chart2 = st.columns(2)
-            with col_chart1:
+        col_chart1, col_chart2 = st.columns(2)
+        with col_chart1:
                 st.markdown("##### 📉 الإيرادات والعمليات خلال الفترة")
                 fig_trend = go.Figure()
                 fig_trend.add_trace(go.Scatter(x=days_df['date'], y=days_df['total_revenue'], mode='lines+markers', name='الإيراد (ج.م)', line=dict(color='#00CC96', width=3)))
@@ -1540,7 +1540,7 @@ elif role == "admin":
                 fig_trend.update_layout(yaxis=dict(title='الإيراد (ج.م)'), yaxis2=dict(title='العمليات', overlaying='y', side='right', showgrid=False), hovermode="x unified", legend=dict(orientation="h", y=1.15), margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_trend, use_container_width=True)
 
-            with col_chart2:
+        with col_chart2:
                 st.markdown("##### 📅 الإيرادات حسب أيام الأسبوع")
                 weekday_stats = behavior_df.groupby('day_name').agg({'total_revenue': 'sum', 'total_customers': 'sum'}).reset_index()
                 day_order = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"]
@@ -1551,8 +1551,8 @@ elif role == "admin":
                 fig_week.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_week, use_container_width=True)
 
-            col_chart3, col_chart4 = st.columns(2)
-            with col_chart3:
+        col_chart3, col_chart4 = st.columns(2)
+        with col_chart3:
                 st.markdown("##### 🔥 ساعات الذروة المالية وحركة الزبائن")
                 hourly = tx_subset.groupby('hour').agg(total_revenue=('amount_paid', 'sum'), total_customers=('id', 'count')).reset_index()
                 hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x:02d}:00")
@@ -1561,7 +1561,7 @@ elif role == "admin":
                 fig_hour.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_hour, use_container_width=True)
 
-            with col_chart4:
+        with col_chart4:
                 st.markdown("##### 🍩 توزيع المصاريف التشغيلية")
                 if not opex_df.empty:
                     exp_cat_summary = opex_df.groupby('category')['amount'].sum().reset_index()
