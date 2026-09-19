@@ -1292,27 +1292,7 @@ elif role == "admin":
                 st.write(f"- إجمالي الإيرادات: {total_rev_all:,.0f} ج")
                 st.write(f"- ناقص إجمالي المستهدف الشهري: {total_obligations:,.0f} ج")
                 st.write(f"- صافي الربح اللحظي: {net_profit:,.0f} ج")
-
-        st.markdown("#### 📊 مؤشرات الأداء الحية (KPI Bars)")
-        bar1, bar2, bar3 = st.columns(3)
-        with bar1:
-            st.metric("🎯 نسبة تغطية المصاريف والتزامات", f"{break_even_pct:.1f}%")
-            st.progress(int(break_even_pct))
-        with bar2:
-            st.metric("📊 نسبة هامش الأرباح للإيراد", f"{profit_margin_pct:.1f}%")
-            st.progress(max(min(int(profit_margin_pct), 100), 0))
-        with bar3:
-            st.metric("💼 نسبة استرداد رأس المال (110 ألف)", f"{capital_recovery_pct:.1f}%", f"المسحب: {total_drawings:,.0f} ج")
-            st.progress(int(capital_recovery_pct))
-
-        # ----------------- قسم أيام التشغيل (3 حجات فقط زي ما طلبت) -----------------
-        st.markdown("---")
-        st.markdown("#### ⏱️ مؤشر كفاءة أيام التشغيل والشهر")
-        day_kpi1, day_kpi2, day_kpi3 = st.columns(3)
-        day_kpi1.metric("⏳ أيام لتغطية المصاريف", f"{break_even_days_needed} يوم")
-        day_kpi2.metric("🚀 أيام الأرباح للشهر", f"{profit_days_count} يوم")
-        day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
-
+        
         st.markdown("---")
         st.markdown("#### 💵 حركة السيولة والأدراج")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
@@ -1343,7 +1323,28 @@ elif role == "admin":
             st.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
         with kpi8:
             st.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
+
+        st.markdown("#### 📊 مؤشرات الأداء الحية (KPI Bars)")
+        bar1, bar2, bar3 = st.columns(3)
+        with bar1:
+            st.metric("🎯 نسبة تغطية المصاريف والتزامات", f"{break_even_pct:.1f}%")
+            st.progress(int(break_even_pct))
+        with bar2:
+            st.metric("📊 نسبة هامش الأرباح للإيراد", f"{profit_margin_pct:.1f}%")
+            st.progress(max(min(int(profit_margin_pct), 100), 0))
+        with bar3:
+            st.metric("💼 نسبة استرداد رأس المال (110 ألف)", f"{capital_recovery_pct:.1f}%", f"المسحب: {total_drawings:,.0f} ج")
+            st.progress(int(capital_recovery_pct))
+
+        # ----------------- قسم أيام التشغيل (3 حجات فقط زي ما طلبت) -----------------
         st.markdown("---")
+        st.markdown("#### ⏱️ مؤشر كفاءة أيام التشغيل والشهر")
+        day_kpi1, day_kpi2, day_kpi3 = st.columns(3)
+        day_kpi1.metric("⏳ أيام لتغطية المصاريف", f"{break_even_days_needed} يوم")
+        day_kpi2.metric("🚀 أيام الأرباح للشهر", f"{profit_days_count} يوم")
+        day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
+
+                st.markdown("---")
 
         st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
         b_list = ["9A", "Heaven"] if selected_branch == "الكل" else ([selected_branch] if selected_branch in ["9A", "Heaven"] else [])
