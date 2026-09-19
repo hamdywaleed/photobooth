@@ -629,13 +629,8 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
     cfg = get_branch_settings(from_branch if from_branch != "Warehouse" else "9A")
     cost_per_p = float(cfg.get("cost_per_print", 1.1))
     
-    # 1. تكلفة الورق تدخل في حساب ربحية الإيفنت فقط
     paper_cost = prints_count * cost_per_p
-    
-    # 2. المصاريف النقدية الفعلية التي تخرج من الخزينة (المواصلات + أجر الموظف فقط بدون ثمن الورق)
     cash_expenses = transport_cost + worker_cost
-    
-    # إجمالي المصاريف المسجلة في تقرير الإيفنت (لإظهار الربحية بدقة شاملة ثمن الورق)
     total_exp_for_report = paper_cost + cash_expenses
     
     with engine.begin() as conn:
@@ -645,7 +640,6 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
             event_date = ev["event_date"]
             total_rev = float(ev["total_amount"])
             
-            # صافي الربح الحقيقي (الإيراد - تكلفة الورق - المواصلات - الموظف)
             profit = total_rev - total_exp_for_report
             d_id = get_or_create_day_id(event_date)
             
@@ -665,17 +659,12 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
                     VALUES (:ts, 'consumption', :qty, :notes, :branch)
                 """), {"ts": now_str, "qty": -prints_count, "notes": f"استهلاك ورق إيفنت #{event_id}", "branch": from_branch})
 
-            # تسجيل المصاريف النقدية الفعلية فقط في الخزينة (المواصلات والموظف) دون خصم ثمن الورق كاش
             if cash_expenses > 0:
                 desc = f"مصروفات نقدية إيفنت #{event_id} ({ev['client_name']}): مواصلات={transport_cost:,.0f}ج، موظف={worker_cost:,.0f}ج"
                 conn.execute(text("""
                     INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, event_id, paid_from)
-                    VALUES (:day_id, :ts, :date, 'Events', :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات', :ev_id, 'safe')
-                """), {"day_id": d_id, "ts": now_str, "date": event_date, "amount": cash_expenses, "desc": desc, "ev_id": event_id})
-                conn.execute(text("""
-                    INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                    VALUES (:ts, :date, 'event_expense', :amount, 'مصاريف إيفنت', :notes)
-                """), {"ts": now_str, "date": event_date, "amount": -cash_expenses, "notes": desc})
+                    VALUES (:day_id, :ts, :date, :b, :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات', :ev_id, 'drawer')
+                """), {"day_id": d_id, "ts": now_str, "date": event_date, "b": from_branch if from_branch != "Warehouse" else "9A", "amount": cash_expenses, "desc": desc, "ev_id": event_id})
 
             conn.execute(text("""
                 UPDATE events
@@ -1169,20 +1158,58 @@ elif role == "admin":
         opex_df = exp_subset[~exp_subset['category'].isin(['مشتريات مخزن وأصول', 'توزيعات أرباح'])] if not exp_subset.empty else pd.DataFrame()
         paid_opex_total = opex_df['amount'].sum() if not opex_df.empty else 0.0
 
-        total_drawings = all_drawings['amount'].sum() if not all_drawings.empty else 0.0
+        # رأس المال الأساسي المسجل (110,000 ج.م) + المسحوبات القديمة 6,600 كقيمة افتتاحية
+        total_drawings = all_drawings['amount'].sum() + 6600.0 if not all_drawings.empty else 6600.0
+        initial_capital = 110000.0
 
-        if selected_branch in ["9A", "Heaven"]:
-            unit_cost = float(get_branch_settings(selected_branch).get("cost_per_print", 1.1))
+        # حساب المصاريف الثابتة الشهرية حسب النطاق
+        cfg_9a = get_branch_settings("9A")
+        cfg_heaven = get_branch_settings("Heaven")
+        fixed_9a = float(cfg_9a.get('rent', 0)) + float(cfg_9a.get('salary', 0)) + float(cfg_9a.get('bills', 0))
+        fixed_heaven = float(cfg_heaven.get('rent', 0)) + float(cfg_heaven.get('salary', 0)) + float(cfg_heaven.get('bills', 0))
+
+        if selected_branch == "9A":
+            monthly_fixed_total = fixed_9a
+            unit_cost = float(cfg_9a.get("cost_per_print", 1.1))
             cogs_total = total_prints_all * unit_cost
-        else:
-            cost_9a = float(get_branch_settings("9A").get("cost_per_print", 1.1))
-            cost_h = float(get_branch_settings("Heaven").get("cost_per_print", 1.1))
+        elif selected_branch == "Heaven":
+            monthly_fixed_total = fixed_heaven
+            unit_cost = float(cfg_heaven.get("cost_per_print", 1.1))
+            cogs_total = total_prints_all * unit_cost
+        elif selected_branch == "Events":
+            monthly_fixed_total = 0.0
+            cogs_total = total_prints_all * 1.1
+        else: # الكل
+            monthly_fixed_total = fixed_9a + fixed_heaven
             p_9a = tx_subset[tx_subset['branch'] == '9A']['prints_count'].sum() if not tx_subset.empty else 0
             p_h = tx_subset[tx_subset['branch'] == 'Heaven']['prints_count'].sum() if not tx_subset.empty else 0
             p_ev = tx_subset[tx_subset['branch'] == 'Events']['prints_count'].sum() if not tx_subset.empty else 0
-            cogs_total = (p_9a * cost_9a) + (p_h * cost_h) + (p_ev * 1.1)
+            cogs_total = (p_9a * float(cfg_9a.get("cost_per_print", 1.1))) + (p_h * float(cfg_heaven.get("cost_per_print", 1.1))) + (p_ev * 1.1)
 
-        net_profit = total_rev_all - cogs_total - paid_opex_total
+        # المعادلة المالية الجديدة للربح وتغطية المصاريف
+        total_obligations = monthly_fixed_total + paid_opex_total + cogs_total
+        net_profit = total_rev_all - total_obligations
+
+        # مؤشر تغطية المصاريف (Break-even Progress)
+        if total_obligations > 0:
+            break_even_pct = min((total_rev_all / total_obligations) * 100.0, 100.0) if net_profit <= 0 else 100.0
+        else:
+            break_even_pct = 100.0 if total_rev_all > 0 else 0.0
+
+        # نسبة الأرباح للإيراد الكلي
+        profit_margin_pct = (net_profit / total_rev_all * 100.0) if total_rev_all > 0 else 0.0
+
+        # نسبة استرداد رأس المال
+        capital_recovery_pct = min((total_drawings / initial_capital) * 100.0, 100.0)
+
+        # عدد الأيام لتغطية المصاريف وأيام الأرباح (ديناميكي)
+        days_passed = max((datetime.now().date() - min_date).days + 1, 1)
+        avg_daily_rev = total_rev_all / days_passed if days_passed > 0 else 0
+        avg_daily_ob = total_obligations / days_passed if days_passed > 0 else 1
+        
+        break_even_days = int(monthly_fixed_total / avg_daily_rev) if avg_daily_rev > 0 else 0
+        break_even_days = min(max(break_even_days, 0), days_passed)
+        profit_days = max(days_passed - break_even_days, 0) if total_rev_all >= monthly_fixed_total else 0
 
         with engine.connect() as conn:
             uncoll_sales = conn.execute(text("SELECT COALESCE(SUM(amount_paid), 0) FROM transactions WHERE is_collected = 0")).fetchone()[0]
@@ -1202,19 +1229,39 @@ elif role == "admin":
             render_stock_alert(get_current_stock("Heaven"), "Heaven")
         st.markdown("---")
 
-        st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية (P&L)")
+        st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية المؤشرة (Proactive P&L)")
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
-        kpi2.metric("🖨️ استهلاك الورق", f"{total_prints_all:,} ورقة", delta=f"{cogs_total:,.0f} ج تكلفة الخامات", delta_color="off")
-        kpi3.metric("🏢 المصروفات المسجلة", f"{paid_opex_total:,.0f} ج.م", delta=f"-{paid_opex_total:,.0f}", delta_color="normal")
-        kpi4.metric("📈 صافي الأرباح الكلية", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
+        kpi2.metric("🖨️ تكلفة الورق الفعلي", f"{cogs_total:,.0f} ج.م", delta=f"{total_prints_all:,} ورقة", delta_color="off")
+        kpi3.metric("🏢 إجمالي التزامات المصاريف", f"{total_obligations:,.0f} ج.م", delta="ثابتة + متغيرة + ورق", delta_color="normal")
+        kpi4.metric("📈 صافي الأرباح الصافية", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
 
-        st.markdown("#### 💵 حركة السيولة والفلوس فين؟")
+        st.markdown("#### 📊 مؤشرات الأداء الحية (KPI Bars)")
+        bar1, bar2, bar3 = st.columns(3)
+        with bar1:
+            st.metric("🎯 نسبة تغطية المصاريف والتزامات", f"{break_even_pct:.1f}%")
+            st.progress(int(break_even_pct))
+        with bar2:
+            st.metric("📊 نسبة هامش الأرباح للإيراد", f"{profit_margin_pct:.1f}%")
+            st.progress(max(min(int(profit_margin_pct), 100), 0))
+        with bar3:
+            st.metric("💼 نسبة استرداد رأس المال (110 ألف)", f"{capital_recovery_pct:.1f}%", f"المسحب: {total_drawings:,.0f} ج")
+            st.progress(int(capital_recovery_pct))
+
+        st.markdown("---")
+        st.markdown("#### ⏱️ مؤشر كفاءة أيام التشغيل والشهر")
+        day_kpi1, day_kpi2, day_kpi3 = st.columns(3)
+        day_kpi1.metric("⏳ أيام لتغطية المصاريف", f"{break_even_days} يوم")
+        day_kpi2.metric("🚀 أيام الأرباح الصافية الحالية", f"{profit_days} يوم")
+        day_kpi3.metric("🏦 الكاش بالخزينة الفعلي", f"{safe_cash:,.0f} ج.م")
+
+        st.markdown("---")
+        st.markdown("#### 💵 حركة السيولة والأدراج")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
-        kpi5.metric("🏦 الكاش بالخزينة (معاك الآن)", f"{safe_cash:,.0f} ج.م", delta="رصيد الخزينة الفعلي")
-        kpi6.metric("⏳ عهدة معلقة بالأدراج (صافي)", f"{net_uncollected_custody:,.0f} ج.م", delta="مطلوب توريدها", delta_color="off")
-        kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
-        kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
+        kpi5.metric("⏳ عهدة معلقة بالأدراج (صافي)", f"{net_uncollected_custody:,.0f} ج.م", delta="مطلوب توريدها", delta_color="off")
+        kpi6.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
+        kpi7.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
+        kpi8.metric("📋 إجمالي العمليات", f"{len(tx_subset):,} عملية")
         st.markdown("---")
 
         st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
@@ -1339,7 +1386,7 @@ elif role == "admin":
             day_exp_map = exp_subset.groupby('operational_date')['amount'].sum().to_dict() if not exp_subset.empty else {}
             behavior_df['day_expenses'] = behavior_df['date'].map(day_exp_map).fillna(0.0)
 
-            daily_fixed_cost = 255.0 if selected_branch == "9A" else (167.0 if selected_branch == "Heaven" else (0.0 if selected_branch == "Events" else 422.0))
+            daily_fixed_cost = monthly_fixed_total / max(days_passed, 1)
             cfg_cost_val = float(get_branch_settings("9A").get("cost_per_print", 1.1))
             behavior_df['paper_cost'] = behavior_df['total_prints'] * cfg_cost_val
             behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - daily_fixed_cost
