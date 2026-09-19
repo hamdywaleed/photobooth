@@ -4,6 +4,7 @@ from datetime import datetime, date, time, timezone, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
+import calendar
 
 # ----------------- EGYPT TIMEZONE SETUP (UTC+3) -----------------
 EGYPT_TZ = timezone(timedelta(hours=3))
@@ -964,7 +965,7 @@ elif role == "admin":
         st.markdown("---")
         col_in1, col_in2 = st.columns(2)
         with col_in1:
-            st.markdown("### 📥 استلام وتوريد شحنة جديدة للمخزن")
+            st.markdown("### 📥 استلاستلام وتوريد شحنة جديدة للمخزن")
             with st.form("new_stock_form", clear_on_submit=True):
                 p_qty = st.number_input("عدد باكتات الورق (1 باكتة = 100 ورقة):", min_value=0, value=0, step=10)
                 ink_qty = st.number_input("عدد علب الحبر (العلبة = 2 ملوة طابعة):", min_value=0.0, value=0.0, step=0.5)
@@ -1186,8 +1187,12 @@ elif role == "admin":
             p_ev = tx_subset[tx_subset['branch'] == 'Events']['prints_count'].sum() if not tx_subset.empty else 0
             cogs_total = (p_9a * float(cfg_9a.get("cost_per_print", 1.1))) + (p_h * float(cfg_heaven.get("cost_per_print", 1.1))) + (p_ev * 1.1)
 
-        # المعادلة المالية الجديدة للربح وتغطية المصاريف
+        # 1. إجمالي الالتزامات والمستهدف الشهري (ثابتة + متغيرة تراكمية + ورق)
         total_obligations = monthly_fixed_total + paid_opex_total + cogs_total
+        
+        # 2. المصاريف والالتزامات الفعلية الدفعت (متغيرة وتراكمية ومصاريف كاش + تكلفة الورق الفعلي)
+        actual_cash_and_paper_spent = paid_opex_total + cogs_total
+
         net_profit = total_rev_all - total_obligations
 
         # مؤشر تغطية المصاريف (Break-even Progress)
@@ -1202,14 +1207,19 @@ elif role == "admin":
         # نسبة استرداد رأس المال
         capital_recovery_pct = min((total_drawings / initial_capital) * 100.0, 100.0)
 
-        # عدد الأيام لتغطية المصاريف وأيام الأرباح (ديناميكي)
-        days_passed = max((datetime.now().date() - min_date).days + 1, 1)
-        avg_daily_rev = total_rev_all / days_passed if days_passed > 0 else 0
-        avg_daily_ob = total_obligations / days_passed if days_passed > 0 else 1
+        # حساب أيام الشهر الفعلية الحالية
+        now_dt = datetime.now()
+        total_days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
+
+        # حسبة عدد الأيام التي احتجناها لتغطية المصاريف وأيام الأرباح
+        avg_daily_rev_calc = (total_rev_all / max(len(tx_subset['date'].unique()), 1)) if not tx_subset.empty else 0
+        if avg_daily_rev_calc > 0:
+            break_even_days_needed = int(round(total_obligations / avg_daily_rev_calc))
+        else:
+            break_even_days_needed = total_days_in_month
         
-        break_even_days = int(monthly_fixed_total / avg_daily_rev) if avg_daily_rev > 0 else 0
-        break_even_days = min(max(break_even_days, 0), days_passed)
-        profit_days = max(days_passed - break_even_days, 0) if total_rev_all >= monthly_fixed_total else 0
+        break_even_days_needed = min(max(break_even_days_needed, 0), total_days_in_month)
+        profit_days_count = max(total_days_in_month - break_even_days_needed, 0) if total_rev_all >= total_obligations else 0
 
         with engine.connect() as conn:
             uncoll_sales = conn.execute(text("SELECT COALESCE(SUM(amount_paid), 0) FROM transactions WHERE is_collected = 0")).fetchone()[0]
@@ -1233,7 +1243,7 @@ elif role == "admin":
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
         kpi2.metric("🖨️ تكلفة الورق الفعلي", f"{cogs_total:,.0f} ج.م", delta=f"{total_prints_all:,} ورقة", delta_color="off")
-        kpi3.metric("🏢 إجمالي التزامات المصاريف", f"{total_obligations:,.0f} ج.م", delta="ثابتة + متغيرة + ورق", delta_color="normal")
+        kpi3.metric("🏢 إجمالي الالتزامات المستهدفة", f"{total_obligations:,.0f} ج.م", delta="ثابتة + متغيرة + ورق", delta_color="normal")
         kpi4.metric("📈 صافي الأرباح الصافية", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
 
         st.markdown("#### 📊 مؤشرات الأداء الحية (KPI Bars)")
@@ -1249,19 +1259,23 @@ elif role == "admin":
             st.progress(int(capital_recovery_pct))
 
         st.markdown("---")
-        st.markdown("#### ⏱️ مؤشر كفاءة أيام التشغيل والشهر")
-        day_kpi1, day_kpi2, day_kpi3 = st.columns(3)
-        day_kpi1.metric("⏳ أيام لتغطية المصاريف", f"{break_even_days} يوم")
-        day_kpi2.metric("🚀 أيام الأرباح الصافية الحالية", f"{profit_days} يوم")
-        day_kpi3.metric("🏦 الكاش بالخزينة الفعلي", f"{safe_cash:,.0f} ج.م")
+        st.markdown("#### ⏱️ مؤشر كفاءة أيام التشغيل والسيولة الفعلية")
+        day_kpi1, day_kpi2, day_kpi3, day_kpi4, day_kpi5 = st.columns(5)
+        day_kpi1.metric("⏳ أيام لتغطية المصاريف", f"{break_even_days_needed} يوم")
+        day_kpi2.metric("🚀 أيام الأرباح للشهر", f"{profit_days_count} يوم")
+        day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
+        
+        # الرقمين المطلوبين مفرودين بوضوح:
+        day_kpi4.metric("🎯 إجمالي المستهدف الشهري", f"{total_obligations:,.0f} ج.م", delta="ثابت + نثريات + ورق")
+        day_kpi5.metric("💸 المصاريف الفعلية + الورق", f"{actual_cash_and_paper_spent:,.0f} ج.م", delta="المنصرف الفعلي")
 
         st.markdown("---")
         st.markdown("#### 💵 حركة السيولة والأدراج")
         kpi5, kpi6, kpi7, kpi8 = st.columns(4)
-        kpi5.metric("⏳ عهدة معلقة بالأدراج (صافي)", f"{net_uncollected_custody:,.0f} ج.م", delta="مطلوب توريدها", delta_color="off")
-        kpi6.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
-        kpi7.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
-        kpi8.metric("📋 إجمالي العمليات", f"{len(tx_subset):,} عملية")
+        kpi5.metric("🏦 الكاش بالخزينة الفعلي", f"{safe_cash:,.0f} ج.م", delta="رصيد الخزينة الفعلي")
+        kpi6.metric("⏳ عهدة معلقة بالأدراج (صافي)", f"{net_uncollected_custody:,.0f} ج.م", delta="مطلوب توريدها", delta_color="off")
+        kpi7.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
+        kpi8.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
         st.markdown("---")
 
         st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
@@ -1385,10 +1399,14 @@ elif role == "admin":
 
             day_exp_map = exp_subset.groupby('operational_date')['amount'].sum().to_dict() if not exp_subset.empty else {}
             behavior_df['day_expenses'] = behavior_df['date'].map(day_exp_map).fillna(0.0)
-            daily_fixed_cost = 255.0 if selected_branch == "9A" else (167.0 if selected_branch == "Heaven" else (0.0 if selected_branch == "Events" else 422.0))
+
+            # الثابت اليومي الصحيح والثابت لكل فرع بدون قسمة عائمة
+            fixed_daily_per_branch = 255.0 if selected_branch == "9A" else (167.0 if selected_branch == "Heaven" else (0.0 if selected_branch == "Events" else 422.0))
             cfg_cost_val = float(get_branch_settings("9A").get("cost_per_print", 1.1))
             behavior_df['paper_cost'] = behavior_df['total_prints'] * cfg_cost_val
-            behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - daily_fixed_cost
+            
+            # حساب الربح اليومي الصريح
+            behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - fixed_daily_per_branch
 
             def extract_time(ts):
                 if pd.isna(ts): return "-"
@@ -1401,7 +1419,19 @@ elif role == "admin":
             st.subheader(f"📋 إيرادات وسلوك العمليات والربح اليومي ({selected_branch})")
             display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue', 'day_expenses', 'daily_net_profit']].copy()
             display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            # دالة تلوين الصفوف في الجدول اليومي (أخضر للمكسب، أحمر للخسارة، رمادي للتعادل)
+            def color_profit_rows(row):
+                val = row['صافي ربح اليوم (ج)']
+                if val > 0:
+                    return ['background-color: rgba(0, 204, 150, 0.2); color: #00CC96; font-weight: bold;'] * len(row)
+                elif val < 0:
+                    return ['background-color: rgba(255, 75, 75, 0.2); color: #ff4b4b; font-weight: bold;'] * len(row)
+                else:
+                    return ['background-color: rgba(128, 128, 128, 0.2); color: #d3d3d3; font-weight: bold;'] * len(row)
+
+            styled_df = display_df.style.apply(color_profit_rows, axis=1)
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
