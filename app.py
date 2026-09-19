@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 import calendar
+import math
 
 # ----------------- EGYPT TIMEZONE SETUP (UTC+3) -----------------
 EGYPT_TZ = timezone(timedelta(hours=3))
@@ -1419,7 +1420,10 @@ elif role == "admin":
             st.subheader(f"📋 إيرادات وسلوك العمليات والربح اليومي ({selected_branch})")
             display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue', 'day_expenses', 'daily_net_profit']].copy()
             display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
-
+            # تقريب الأرقام لأعلى وإزالة العلامات العشرية والأصفار الزائدة
+            display_df['الإيراد (ج.م)'] = display_df['الإيراد (ج.م)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
+            display_df['نثريات (ج)'] = display_df['نثريات (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
+            display_df['صافي ربح اليوم (ج)'] = display_df['صافي ربح اليوم (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
             # دالة تلوين الصفوف في الجدول اليومي (أخضر للمكسب، أحمر للخسارة، رمادي للتعادل)
             def color_profit_rows(row):
                 val = row['صافي ربح اليوم (ج)']
