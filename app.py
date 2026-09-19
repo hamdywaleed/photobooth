@@ -1385,8 +1385,7 @@ elif role == "admin":
 
             day_exp_map = exp_subset.groupby('operational_date')['amount'].sum().to_dict() if not exp_subset.empty else {}
             behavior_df['day_expenses'] = behavior_df['date'].map(day_exp_map).fillna(0.0)
-
-            daily_fixed_cost = monthly_fixed_total / max(days_passed, 1)
+            daily_fixed_cost = 255.0 if selected_branch == "9A" else (167.0 if selected_branch == "Heaven" else (0.0 if selected_branch == "Events" else 422.0))
             cfg_cost_val = float(get_branch_settings("9A").get("cost_per_print", 1.1))
             behavior_df['paper_cost'] = behavior_df['total_prints'] * cfg_cost_val
             behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - daily_fixed_cost
