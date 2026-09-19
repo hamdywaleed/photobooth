@@ -1535,8 +1535,8 @@ elif role == "admin":
         with col_chart1:
                 st.markdown("##### 📉 الإيرادات والعمليات خلال الفترة")
                 fig_trend = go.Figure()
-                fig_trend.add_trace(go.Scatter(x=days_df['date'], y=days_df['total_revenue'], mode='lines+markers', name='الإيراد (ج.م)', line=dict(color='#00CC96', width=3)))
-                fig_trend.add_trace(go.Bar(x=days_df['date'], y=days_df['total_customers'], name='عدد العمليات', yaxis='y2', marker_color='rgba(99, 110, 250, 0.45)'))
+                fig_trend.add_trace(go.Scatter(x=behavior_df['date'], y=behavior_df['total_revenue'], mode='lines+markers', name='الإيراد (ج.م)', line=dict(color='#00CC96', width=3)))
+                fig_trend.add_trace(go.Bar(x=behavior_df['date'], y=behavior_df['total_customers'], name='عدد العمليات', yaxis='y2', marker_color='rgba(99, 110, 250, 0.45)'))
                 fig_trend.update_layout(yaxis=dict(title='الإيراد (ج.م)'), yaxis2=dict(title='العمليات', overlaying='y', side='right', showgrid=False), hovermode="x unified", legend=dict(orientation="h", y=1.15), margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_trend, use_container_width=True)
 
