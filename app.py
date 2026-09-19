@@ -1240,8 +1240,9 @@ elif role == "admin":
             render_stock_alert(get_current_stock("Heaven"), "Heaven")
         st.markdown("---")
 
+        # ----------------- ترتيب الكروت الرئيسية فوق (5 كروت شاملة المستهدف والفعلي وصافي الربح) -----------------
         st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية المؤشرة (Proactive P&L)")
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         
         with kpi1:
             st.metric("💰 إجمالي الإيرادات", f"{total_rev_all:,.0f} ج.م")
@@ -1265,19 +1266,31 @@ elif role == "admin":
                 st.write(f"- إجمالي الورق المستهلك: {total_prints_all:,} ورقة")
 
         with kpi3:
-            st.metric("🏢 إجمالي الالتزامات المستهدفة", f"{total_obligations:,.0f} ج.م", delta="ثابتة + متغيرة + ورق", delta_color="normal")
-            with st.popover("ℹ️ تفاصيل الالتزامات"):
-                st.markdown("##### 💸 تفاصيل الالتزامات والنثريات")
+            st.metric("🎯 المستهدف الشهري", f"{total_obligations:,.0f} ج.م", delta="ثابت + نثريات + ورق")
+            with st.popover("ℹ️ تفاصيل المستهدف الشهري"):
+                st.markdown("##### 🎯 مكونات المستهدف")
                 st.write(f"- المصاريف الثابتة الشهرية: {monthly_fixed_total:,.0f} ج")
-                st.write(f"- إجمالي النثريات المتغيرة المسجلة: {paid_opex_total:,.0f} ج")
+                st.write(f"- إجمالي النثريات المتغيرة: {paid_opex_total:,.0f} ج")
                 st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
 
         with kpi4:
+            st.metric("💸 المصاريف الفعلية + الورق", f"{actual_cash_and_paper_spent:,.0f} ج.م", delta="المنصرف الفعلي")
+            with st.popover("ℹ️ تفاصيل المصاريف الفعلية"):
+                st.markdown("##### 💸 تفاصيل المنصرف الفعلي")
+                st.write(f"- النثريات الفعلية المدفوعة: {paid_opex_total:,.0f} ج")
+                st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
+                with engine.connect() as conn:
+                    recent_exp = pd.read_sql_query(text("SELECT timestamp, branch, amount, description FROM expenses ORDER BY timestamp DESC LIMIT 5"), conn)
+                if not recent_exp.empty:
+                    st.markdown("آخر المصروفات المسجلة:")
+                    st.dataframe(recent_exp, use_container_width=True, hide_index=True)
+
+        with kpi5:
             st.metric("📈 صافي الأرباح الصافية", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
             with st.popover("ℹ️ تفاصيل صافي الأرباح"):
                 st.markdown("##### 📈 معادلة صافي الربح")
                 st.write(f"- إجمالي الإيرادات: {total_rev_all:,.0f} ج")
-                st.write(f"- ناقص إجمالي الالتزامات والمصاريف: {total_obligations:,.0f} ج")
+                st.write(f"- ناقص إجمالي المستهدف الشهري: {total_obligations:,.0f} ج")
                 st.write(f"- صافي الربح اللحظي: {net_profit:,.0f} ج")
 
         st.markdown("#### 📊 مؤشرات الأداء الحية (KPI Bars)")
@@ -1292,32 +1305,13 @@ elif role == "admin":
             st.metric("💼 نسبة استرداد رأس المال (110 ألف)", f"{capital_recovery_pct:.1f}%", f"المسحب: {total_drawings:,.0f} ج")
             st.progress(int(capital_recovery_pct))
 
+        # ----------------- قسم أيام التشغيل (3 حجات فقط زي ما طلبت) -----------------
         st.markdown("---")
-        st.markdown("#### ⏱️ مؤشر كفاءة أيام التشغيل والسيولة الفعلية")
-        day_kpi1, day_kpi2, day_kpi3, day_kpi4, day_kpi5 = st.columns(5)
+        st.markdown("#### ⏱️ مؤشر كفاءة أيام التشغيل والشهر")
+        day_kpi1, day_kpi2, day_kpi3 = st.columns(3)
         day_kpi1.metric("⏳ أيام لتغطية المصاريف", f"{break_even_days_needed} يوم")
         day_kpi2.metric("🚀 أيام الأرباح للشهر", f"{profit_days_count} يوم")
         day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
-        
-        with day_kpi4:
-            st.metric("🎯 إجمالي المستهدف الشهري", f"{total_obligations:,.0f} ج.م", delta="ثابت + نثريات + ورق")
-            with st.popover("ℹ️ تفاصيل المستهدف"):
-                st.markdown("##### 🎯 مكونات المستهدف الشهري")
-                st.write(f"- المصاريف الثابتة: {monthly_fixed_total:,.0f} ج")
-                st.write(f"- النثريات المسجلة: {paid_opex_total:,.0f} ج")
-                st.write(f"- تكلفة الورق: {cogs_total:,.0f} ج")
-
-        with day_kpi5:
-            st.metric("💸 المصاريف الفعلية + الورق", f"{actual_cash_and_paper_spent:,.0f} ج.م", delta="المنصرف الفعلي")
-            with st.popover("ℹ️ تفاصيل المصاريف الفعلية"):
-                st.markdown("##### 💸 تفاصيل المنصرف الفعلي")
-                st.write(f"- النثريات الفعلية المدفوعة: {paid_opex_total:,.0f} ج")
-                st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
-                with engine.connect() as conn:
-                    recent_exp = pd.read_sql_query(text("SELECT timestamp, branch, amount, description FROM expenses ORDER BY timestamp DESC LIMIT 5"), conn)
-                if not recent_exp.empty:
-                    st.markdown("آخر المصروفات المسجلة:")
-                    st.dataframe(recent_exp, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.markdown("#### 💵 حركة السيولة والأدراج")
