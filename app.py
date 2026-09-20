@@ -1177,7 +1177,9 @@ elif role == "admin":
         total_rev_all = tx_subset['amount_paid'].sum() if not tx_subset.empty else 0.0
         total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
         
-        opex_df = exp_subset[~exp_subset['category'].isin(['مشتريات مخزن وأصول', 'توزيعات أرباح'])] if not exp_subset.empty else pd.DataFrame()
+        # استبعاد البنود الثابتة ومشتريات المخزن من النثريات المتغيرة لعدم تكرار الحساب
+        excluded_categories = ['توزيعات أرباح', 'إيجار', 'مرتبات وعمالة', 'فواتير وأقساط']
+        opex_df = exp_subset[~exp_subset['category'].isin(excluded_categories)] if not exp_subset.empty else pd.DataFrame()
         paid_opex_total = opex_df['amount'].sum() if not opex_df.empty else 0.0
 
         total_drawings = all_drawings['amount'].sum() + 6600.0 if not all_drawings.empty else 6600.0
