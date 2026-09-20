@@ -273,7 +273,35 @@ def init_db():
 
 init_db()
 
-# ----------------- GENERAL & SETTINGS HELPERS -----------------
+# ----------------- GENERAL & SETTINGS HELPERS (WITH CACHING FOR SPEED) -----------------
+def get_or_create_day_id(date_str: str) -> int:
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
+        if row:
+            return row[0]
+        
+        if IS_POSTGRES:
+            res = conn.execute(text("""
+                INSERT INTO days (date) VALUES (:date)
+                ON CONFLICT (date) DO UPDATE SET date = EXCLUDED.date
+                RETURNING id
+            """), {"date": date_str}).fetchone()
+            return res[0]
+        else:
+            conn.execute(text("INSERT OR IGNORE INTO days (date) VALUES (:date)"), {"date": date_str})
+            res = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
+            return res[0]
+
+def get_todays_day_id() -> int:
+    today_str = get_egypt_today_str()
+    if "cached_today_str" in st.session_state and st.session_state.cached_today_str == today_str:
+        if "cached_day_id" in st.session_state:
+            return st.session_state.cached_day_id
+
+    day_id = get_or_create_day_id(today_str)
+    st.session_state.cached_today_str = today_str
+    st.session_state.cached_day_id = day_id
+    return day_id
 
 def get_branch_settings(branch_name: str):
     with engine.connect() as conn:
@@ -284,40 +312,28 @@ def get_branch_settings(branch_name: str):
 
 def update_branch_settings(branch_name: str, rent: float, salary: float, bills: float, cost_per_print: float):
     now_str = get_egypt_now_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO branch_settings (branch, rent, salary, bills, cost_per_print, updated_at)
-                VALUES (:b, :r, :s, :bills, :c, :ts)
-                ON CONFLICT (branch) DO UPDATE 
-                SET rent = :r, salary = :s, bills = :bills, cost_per_print = :c, updated_at = :ts
-            """), {"b": branch_name, "r": rent, "s": salary, "bills": bills, "c": cost_per_print, "ts": now_str})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO branch_settings (branch, rent, salary, bills, cost_per_print, updated_at)
+            VALUES (:b, :r, :s, :bills, :c, :ts)
+            ON CONFLICT (branch) DO UPDATE 
+            SET rent = :r, salary = :s, bills = :bills, cost_per_print = :c, updated_at = :ts
+        """), {"b": branch_name, "r": rent, "s": salary, "bills": bills, "c": cost_per_print, "ts": now_str})
 
 # ----------------- LEAVES HELPERS -----------------
 def check_and_add_monthly_allowance():
     current_month_str = get_egypt_now().strftime("%Y-%m")
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            for b in ["Heaven", "9A"]:
-                row = conn.execute(
-                    text("SELECT id FROM employee_leaves WHERE branch = :branch AND action_type = 'monthly_allowance' AND notes LIKE :month_pattern"),
-                    {"branch": b, "month_pattern": f"%{current_month_str}%"}
-                ).fetchone()
-                if not row:
-                    conn.execute(text("""
-                        INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
-                        VALUES (:ts, :branch, 'monthly_allowance', 4, :notes)
-                    """), {"ts": get_egypt_now_str(), "branch": b, "notes": f"رصيد إجازات شهر {current_month_str}"})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        for b in ["Heaven", "9A"]:
+            row = conn.execute(
+                text("SELECT id FROM employee_leaves WHERE branch = :branch AND action_type = 'monthly_allowance' AND notes LIKE :month_pattern"),
+                {"branch": b, "month_pattern": f"%{current_month_str}%"}
+            ).fetchone()
+            if not row:
+                conn.execute(text("""
+                    INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
+                    VALUES (:ts, :branch, 'monthly_allowance', 4, :notes)
+                """), {"ts": get_egypt_now_str(), "branch": b, "notes": f"رصيد إجازات شهر {current_month_str}"})
 
 def get_leave_balance(branch_name: str):
     with engine.connect() as conn:
@@ -325,17 +341,11 @@ def get_leave_balance(branch_name: str):
         return res[0] if res else 0
 
 def record_leave(branch_name: str, notes: str = "إجازة اعتيادية"):
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
-                VALUES (:ts, :b, 'leave_taken', -1, :notes)
-            """), {"ts": get_egypt_now_str(), "b": branch_name, "notes": notes})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO employee_leaves (timestamp, branch, action_type, days_count, notes)
+            VALUES (:ts, :b, 'leave_taken', -1, :notes)
+        """), {"ts": get_egypt_now_str(), "b": branch_name, "notes": notes})
 
 def get_current_stock(target: str):
     with engine.connect() as conn:
@@ -374,319 +384,207 @@ def add_warehouse_stock(packets: int, ink_bottles: float, cost: float, notes: st
     sheets = packets * 100
     refills = int(round(ink_bottles * 2))
     today_str = get_egypt_today_str()
-    d_id = get_or_create_day_id(today_str)
+    d_id = get_todays_day_id()
     
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            if sheets > 0:
-                conn.execute(text("""
-                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                    VALUES (:ts, 'restock', :qty, :notes, 'Warehouse')
-                """), {"ts": now_str, "qty": sheets, "notes": f"شراء {packets} باكتة ورق | {notes}"})
-            if refills > 0:
-                conn.execute(text("""
-                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                    VALUES (:ts, 'restock_ink', :qty, :notes, 'Warehouse_Ink')
-                """), {"ts": now_str, "qty": refills, "notes": f"شراء حبر: {ink_bottles} علبة ({refills} ملوة) | {notes}"})
-            if cost > 0:
-                conn.execute(text("""
-                    INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
-                    VALUES (:d_id, :ts, :date, 'Warehouse', :amount, :desc, 'المدير', 'مشتريات مخزن وأصول', 'safe')
-                """), {"d_id": d_id, "ts": now_str, "date": today_str, "amount": cost, "desc": f"فاتورة خامات: {packets} باكتة ورق + {ink_bottles} علبة حبر"})
-                conn.execute(text("""
-                    INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                    VALUES (:ts, :date, 'expense', :amount, 'شراء خامات للمخزن', :notes)
-                """), {"ts": now_str, "date": today_str, "amount": -cost, "notes": f"شراء {packets} باكتة ورق و {ink_bottles} علبة حبر"})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        if sheets > 0:
+            conn.execute(text("""
+                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                VALUES (:ts, 'restock', :qty, :notes, 'Warehouse')
+            """), {"ts": now_str, "qty": sheets, "notes": f"شراء {packets} باكتة ورق | {notes}"})
+        if refills > 0:
+            conn.execute(text("""
+                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                VALUES (:ts, 'restock_ink', :qty, :notes, 'Warehouse_Ink')
+            """), {"ts": now_str, "qty": refills, "notes": f"شراء حبر: {ink_bottles} علبة ({refills} ملوة) | {notes}"})
+        if cost > 0:
+            conn.execute(text("""
+                INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
+                VALUES (:d_id, :ts, :date, 'Warehouse', :amount, :desc, 'المدير', 'مشتريات مخزن وأصول', 'safe')
+            """), {"d_id": d_id, "ts": now_str, "date": today_str, "amount": cost, "desc": f"فاتورة خامات: {packets} باكتة ورق + {ink_bottles} علبة حبر"})
+            conn.execute(text("""
+                INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
+                VALUES (:ts, :date, 'expense', :amount, 'شراء خامات للمخزن', :notes)
+            """), {"ts": now_str, "date": today_str, "amount": -cost, "notes": f"شراء {packets} باكتة ورق و {ink_bottles} علبة حبر"})
 
 def transfer_stock_to_branch(to_branch: str, sheets_count: int, notes: str = ""):
     now_str = get_egypt_now_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'transfer_out', :qty, :notes, 'Warehouse')
-            """), {"ts": now_str, "qty": -sheets_count, "notes": f"تحويل إلى فرع {to_branch} | {notes}"})
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'transfer_in', :qty, :notes, :branch)
-            """), {"ts": now_str, "qty": sheets_count, "notes": f"مستلم من المخزن الرئيسي | {notes}", "branch": to_branch})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'transfer_out', :qty, :notes, 'Warehouse')
+        """), {"ts": now_str, "qty": -sheets_count, "notes": f"تحويل إلى فرع {to_branch} | {notes}"})
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'transfer_in', :qty, :notes, :branch)
+        """), {"ts": now_str, "qty": sheets_count, "notes": f"مستلم من المخزن الرئيسي | {notes}", "branch": to_branch})
 
 def transfer_ink_to_branch(to_branch: str, refills_count: int, notes: str = ""):
     now_str = get_egypt_now_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'transfer_out_ink', :qty, :notes, 'Warehouse_Ink')
-            """), {"ts": now_str, "qty": -refills_count, "notes": f"تزويد فرع {to_branch} بـ {refills_count} ملوة طابعة | {notes}"})
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'transfer_in_ink', :qty, :notes, :branch)
-            """), {"ts": now_str, "qty": refills_count, "notes": f"استلام {refills_count} ملوة حبر من المخزن | {notes}", "branch": to_branch})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'transfer_out_ink', :qty, :notes, 'Warehouse_Ink')
+        """), {"ts": now_str, "qty": -refills_count, "notes": f"تزويد فرع {to_branch} بـ {refills_count} ملوة طابعة | {notes}"})
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'transfer_in_ink', :qty, :notes, :branch)
+        """), {"ts": now_str, "qty": refills_count, "notes": f"استلام {refills_count} ملوة حبر من المخزن | {notes}", "branch": to_branch})
 
 def manual_adjust_branch_stock(branch_name: str, sheets_count: int, action: str = "خصم", notes: str = ""):
     now_str = get_egypt_now_str()
     qty = -sheets_count if action == "خصم" else sheets_count
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'manual_adjust', :qty, :notes, :b)
-            """), {"ts": now_str, "qty": qty, "notes": f"تسوية يدوية ({action} {sheets_count} ورقة) | {notes}", "b": branch_name})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'manual_adjust', :qty, :notes, :b)
+        """), {"ts": now_str, "qty": qty, "notes": f"تسوية يدوية ({action} {sheets_count} ورقة) | {notes}", "b": branch_name})
 
 def record_waste(branch_name: str, quantity: int = 1, notes: str = "ورقة تالفة"):
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'waste', :qty, :notes, :b)
-            """), {"ts": get_egypt_now_str(), "qty": -quantity, "notes": notes, "b": branch_name})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'waste', :qty, :notes, :b)
+        """), {"ts": get_egypt_now_str(), "qty": -quantity, "notes": notes, "b": branch_name})
 
 def record_free_prints(branch_name: str, prints_count: int, notes: str = "طباعة مجانية / ضيافة"):
     now_str = get_egypt_now_str()
-    today_str = get_egypt_today_str()
-    day_id = get_or_create_day_id(today_str)
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
-                VALUES (:day_id, :ts, :prints, 0.0, :b, 1)
-            """), {"day_id": day_id, "ts": now_str, "prints": prints_count, "b": branch_name})
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'free', :qty, :notes, :b)
-            """), {"ts": now_str, "qty": -prints_count, "notes": notes, "b": branch_name})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    day_id = get_todays_day_id()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
+            VALUES (:day_id, :ts, :prints, 0.0, :b, 1)
+        """), {"day_id": day_id, "ts": now_str, "prints": prints_count, "b": branch_name})
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'free', :qty, :notes, :b)
+        """), {"ts": now_str, "qty": -prints_count, "notes": notes, "b": branch_name})
 
 def record_transaction(branch_name: str, prints_count: int, amount_paid: float):
     now_str = get_egypt_now_str()
-    today_str = get_egypt_today_str()
-    day_id = get_or_create_day_id(today_str)
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
-                VALUES (:day_id, :ts, :prints, :amount, :b, 0)
-            """), {"day_id": day_id, "ts": now_str, "prints": prints_count, "amount": amount_paid, "b": branch_name})
-            conn.execute(text("""
-                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                VALUES (:ts, 'consumption', :qty, 'استهلاك بيع', :b)
-            """), {"ts": now_str, "qty": -prints_count, "b": branch_name})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    day_id = get_todays_day_id()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected)
+            VALUES (:day_id, :ts, :prints, :amount, :b, 0)
+        """), {"day_id": day_id, "ts": now_str, "prints": prints_count, "amount": amount_paid, "b": branch_name})
+        conn.execute(text("""
+            INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+            VALUES (:ts, 'consumption', :qty, 'استهلاك بيع', :b)
+        """), {"ts": now_str, "qty": -prints_count, "b": branch_name})
 
 def delete_transaction(tx_id: int, branch_name: str):
     now_str = get_egypt_now_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            tx = conn.execute(text("SELECT * FROM transactions WHERE id = :id AND branch = :b"), {"id": tx_id, "b": branch_name}).mappings().fetchone()
-            if tx:
-                conn.execute(text("""
-                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                    VALUES (:ts, 'restock', :qty, :notes, :b)
-                """), {"ts": now_str, "qty": tx["prints_count"], "notes": f"استرجاع ورق لحذف المعاملة #{tx_id}", "b": branch_name})
-                conn.execute(text("""
-                    INSERT INTO audit_logs (timestamp, branch, action_type, entity_type, entity_id, details)
-                    VALUES (:ts, :b, 'حذف مبيعات', 'transaction', :tx_id, :details)
-                """), {"ts": now_str, "b": branch_name, "tx_id": tx_id, "details": f"تم حذف العملية (الوقت: {tx['timestamp']} | الورق: {tx['prints_count']} | المبلغ: {tx['amount_paid']} ج.م)"})
-                conn.execute(text("DELETE FROM transactions WHERE id = :id"), {"id": tx_id})
-                trans.commit()
-                return True
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        tx = conn.execute(text("SELECT * FROM transactions WHERE id = :id AND branch = :b"), {"id": tx_id, "b": branch_name}).mappings().fetchone()
+        if tx:
+            conn.execute(text("""
+                INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                VALUES (:ts, 'restock', :qty, :notes, :b)
+            """), {"ts": now_str, "qty": tx["prints_count"], "notes": f"استرجاع ورق لحذف المعاملة #{tx_id}", "b": branch_name})
+            conn.execute(text("""
+                INSERT INTO audit_logs (timestamp, branch, action_type, entity_type, entity_id, details)
+                VALUES (:ts, :b, 'حذف مبيعات', 'transaction', :tx_id, :details)
+            """), {"ts": now_str, "b": branch_name, "tx_id": tx_id, "details": f"تم حذف العملية (الوقت: {tx['timestamp']} | الورق: {tx['prints_count']} | المبلغ: {tx['amount_paid']} ج.م)"})
+            conn.execute(text("DELETE FROM transactions WHERE id = :id"), {"id": tx_id})
+            return True
     return False
 
 def update_transaction(tx_id: int, branch_name: str, new_prints: int, new_amount: float):
     now_str = get_egypt_now_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            tx = conn.execute(text("SELECT * FROM transactions WHERE id = :id AND branch = :b"), {"id": tx_id, "b": branch_name}).mappings().fetchone()
-            if tx:
-                diff_prints = new_prints - tx["prints_count"]
-                if diff_prints != 0:
-                    conn.execute(text("""
-                        INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                        VALUES (:ts, 'consumption', :qty, :notes, :b)
-                    """), {"ts": now_str, "qty": -diff_prints, "notes": f"تسوية فرق ورق لتعديل المعاملة #{tx_id}", "b": branch_name})
-                conn.execute(text("""
-                    INSERT INTO audit_logs (timestamp, branch, action_type, entity_type, entity_id, details)
-                    VALUES (:ts, :b, 'تعديل مبيعات', 'transaction', :tx_id, :details)
-                """), {"ts": now_str, "b": branch_name, "tx_id": tx_id, "details": f"تعديل من ({tx['prints_count']} ورق - {tx['amount_paid']} ج) إلى ({new_prints} ورق - {new_amount} ج)"})
-                conn.execute(text("UPDATE transactions SET prints_count = :prints, amount_paid = :amount WHERE id = :id"), {"prints": new_prints, "amount": new_amount, "id": tx_id})
-                trans.commit()
-                return True
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
-    return False
-
-def get_or_create_day_id(date_str: str) -> int:
     with engine.begin() as conn:
-        row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
-        if row:
-            return row[0]
-        
-        if IS_POSTGRES:
-            res = conn.execute(text("""
-                INSERT INTO days (date) VALUES (:date)
-                ON CONFLICT (date) DO UPDATE SET date = EXCLUDED.date
-                RETURNING id
-            """), {"date": date_str}).fetchone()
-            return res[0]
-        else:
-            conn.execute(text("INSERT OR IGNORE INTO days (date) VALUES (:date)"), {"date": date_str})
-            res = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
-            return res[0]
+        tx = conn.execute(text("SELECT * FROM transactions WHERE id = :id AND branch = :b"), {"id": tx_id, "b": branch_name}).mappings().fetchone()
+        if tx:
+            diff_prints = new_prints - tx["prints_count"]
+            if diff_prints != 0:
+                conn.execute(text("""
+                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                    VALUES (:ts, 'consumption', :qty, :notes, :b)
+                """), {"ts": now_str, "qty": -diff_prints, "notes": f"تسوية فرق ورق لتعديل المعاملة #{tx_id}", "b": branch_name})
+            conn.execute(text("""
+                INSERT INTO audit_logs (timestamp, branch, action_type, entity_type, entity_id, details)
+                VALUES (:ts, :b, 'تعديل مبيعات', 'transaction', :tx_id, :details)
+            """), {"ts": now_str, "b": branch_name, "tx_id": tx_id, "details": f"تعديل من ({tx['prints_count']} ورق - {tx['amount_paid']} ج) إلى ({new_prints} ورق - {new_amount} ج)"})
+            conn.execute(text("UPDATE transactions SET prints_count = :prints, amount_paid = :amount WHERE id = :id"), {"prints": new_prints, "amount": new_amount, "id": tx_id})
+            return True
+    return False
 
 def record_expense(branch_name: str, amount: float, description: str, created_by: str, category: str = "نثريات وتشغيل", paid_from: str = "drawer"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
-    day_id = get_or_create_day_id(today_str)
-    
+    day_id = get_todays_day_id()
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
             VALUES (:day_id, :ts, :date, :b, :amount, :desc, :user, :cat, :p_from)
-        """), {
-            "day_id": day_id, 
-            "ts": now_str, 
-            "date": today_str, 
-            "b": branch_name, 
-            "amount": amount, 
-            "desc": description, 
-            "user": created_by, 
-            "cat": category, 
-            "p_from": paid_from
-        })
+        """), {"day_id": day_id, "ts": now_str, "date": today_str, "b": branch_name, "amount": amount, "desc": description, "user": created_by, "cat": category, "p_from": paid_from})
         
         if paid_from == "safe":
             conn.execute(text("""
                 INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
                 VALUES (:ts, :date, 'expense', :amount, :dest, :notes)
-            """), {
-                "ts": now_str, 
-                "date": today_str, 
-                "amount": -amount, 
-                "dest": f"{branch_name} - {category}", 
-                "notes": description
-            })
-
+            """), {"ts": now_str, "date": today_str, "amount": -amount, "dest": f"{branch_name} - {category}", "notes": description})
 
 def record_safe_deposit(amount: float, notes: str = "إيداع كاش"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                VALUES (:ts, :date, 'deposit', :amount, 'إيداع مباشر', :notes)
-            """), {"ts": now_str, "date": today_str, "amount": amount, "notes": notes})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
+            VALUES (:ts, :date, 'deposit', :amount, 'إيداع مباشر', :notes)
+        """), {"ts": now_str, "date": today_str, "amount": amount, "notes": notes})
 
 def record_safe_withdrawal(amount: float, receiver: str, notes: str = "سحب أرباح / مسحوبات"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            conn.execute(text("""
-                INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                VALUES (:ts, :date, 'withdrawal', :amount, :receiver, :notes)
-            """), {"ts": now_str, "date": today_str, "amount": -amount, "receiver": receiver, "notes": notes})
-            conn.execute(text("""
-                INSERT INTO cash_drawings (timestamp, date, amount, receiver, notes)
-                VALUES (:ts, :date, :amount, :rec, :notes)
-            """), {"ts": now_str, "date": today_str, "amount": amount, "rec": receiver, "notes": notes})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
+            VALUES (:ts, :date, 'withdrawal', :amount, :receiver, :notes)
+        """), {"ts": now_str, "date": today_str, "amount": -amount, "receiver": receiver, "notes": notes})
+        conn.execute(text("""
+            INSERT INTO cash_drawings (timestamp, date, amount, receiver, notes)
+            VALUES (:ts, :date, :amount, :rec, :notes)
+        """), {"ts": now_str, "date": today_str, "amount": amount, "rec": receiver, "notes": notes})
 
 def settle_drawer_custody(branch_name: str, amount_to_collect: float):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            unsettled_exp = conn.execute(text("""
-                SELECT COALESCE(SUM(amount), 0) FROM expenses 
-                WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
-            """), {"b": branch_name}).fetchone()[0]
-            unsettled_exp = float(unsettled_exp)
+    with engine.begin() as conn:
+        unsettled_exp = conn.execute(text("""
+            SELECT COALESCE(SUM(amount), 0) FROM expenses 
+            WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
+        """), {"b": branch_name}).fetchone()[0]
+        unsettled_exp = float(unsettled_exp)
 
+        conn.execute(text("""
+            UPDATE expenses SET category = 'نثريات مسواة' 
+            WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
+        """), {"b": branch_name})
+
+        sales_needed = amount_to_collect + unsettled_exp
+
+        uncoll = conn.execute(text("""
+            SELECT id, amount_paid FROM transactions 
+            WHERE branch = :b AND is_collected = 0 ORDER BY id ASC
+        """), {"b": branch_name}).mappings().fetchall()
+
+        rem = sales_needed
+        for tx in uncoll:
+            t_amt = float(tx["amount_paid"])
+            if rem >= t_amt:
+                conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE id = :id"), {"id": tx["id"]})
+                rem -= t_amt
+            elif rem > 0:
+                conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE id = :id"), {"id": tx["id"]})
+                rem = 0
+                break
+
+        if amount_to_collect > 0:
             conn.execute(text("""
-                UPDATE expenses SET category = 'نثريات مسواة' 
-                WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
-            """), {"b": branch_name})
-
-            sales_needed = amount_to_collect + unsettled_exp
-
-            uncoll = conn.execute(text("""
-                SELECT id, amount_paid FROM transactions 
-                WHERE branch = :b AND is_collected = 0 ORDER BY id ASC
-            """), {"b": branch_name}).mappings().fetchall()
-
-            rem = sales_needed
-            for tx in uncoll:
-                t_amt = float(tx["amount_paid"])
-                if rem >= t_amt:
-                    conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE id = :id"), {"id": tx["id"]})
-                    rem -= t_amt
-                elif rem > 0:
-                    conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE id = :id"), {"id": tx["id"]})
-                    rem = 0
-                    break
-
-            if amount_to_collect > 0:
-                conn.execute(text("""
-                    INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                    VALUES (:ts, :date, 'collection', :amount, :src, 'توريد عهدة درج')
-                """), {"ts": now_str, "date": today_str, "amount": amount_to_collect, "src": f"فرع {branch_name}"})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+                INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
+                VALUES (:ts, :date, 'collection', :amount, :src, 'توريد عهدة درج')
+            """), {"ts": now_str, "date": today_str, "amount": amount_to_collect, "src": f"فرع {branch_name}"})
 
 def get_current_safe_balance():
     with engine.connect() as conn:
@@ -708,46 +606,40 @@ def create_event(event_date: str, client_name: str, location: str, device: str, 
     now_str = get_egypt_now_str()
     remaining = total_amount - deposit_paid
     status = "قيد الانتظار"
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            if IS_POSTGRES:
-                ev_id = conn.execute(text("""
-                    INSERT INTO events (created_at, event_date, client_name, location, device, hours, start_time, end_time, total_amount, deposit_paid, remaining_amount, status, notes)
-                    VALUES (:created_at, :event_date, :client_name, :location, :device, :hours, :start_time, :end_time, :total_amount, :deposit_paid, :remaining_amount, :status, :notes)
-                    RETURNING id
-                """), {
-                    "created_at": now_str, "event_date": event_date, "client_name": client_name,
-                    "location": location, "device": device, "hours": hours, "start_time": start_time,
-                    "end_time": end_time, "total_amount": total_amount, "deposit_paid": deposit_paid,
-                    "remaining_amount": remaining, "status": status, "notes": notes
-                }).fetchone()[0]
-            else:
-                conn.execute(text("""
-                    INSERT INTO events (created_at, event_date, client_name, location, device, hours, start_time, end_time, total_amount, deposit_paid, remaining_amount, status, notes)
-                    VALUES (:created_at, :event_date, :client_name, :location, :device, :hours, :start_time, :end_time, :total_amount, :deposit_paid, :remaining_amount, :status, :notes)
-                """), {
-                    "created_at": now_str, "event_date": event_date, "client_name": client_name,
-                    "location": location, "device": device, "hours": hours, "start_time": start_time,
-                    "end_time": end_time, "total_amount": total_amount, "deposit_paid": deposit_paid,
-                    "remaining_amount": remaining, "status": status, "notes": notes
-                })
-                ev_id = conn.execute(text("SELECT last_insert_rowid()")).fetchone()[0]
+    with engine.begin() as conn:
+        if IS_POSTGRES:
+            ev_id = conn.execute(text("""
+                INSERT INTO events (created_at, event_date, client_name, location, device, hours, start_time, end_time, total_amount, deposit_paid, remaining_amount, status, notes)
+                VALUES (:created_at, :event_date, :client_name, :location, :device, :hours, :start_time, :end_time, :total_amount, :deposit_paid, :remaining_amount, :status, :notes)
+                RETURNING id
+            """), {
+                "created_at": now_str, "event_date": event_date, "client_name": client_name,
+                "location": location, "device": device, "hours": hours, "start_time": start_time,
+                "end_time": end_time, "total_amount": total_amount, "deposit_paid": deposit_paid,
+                "remaining_amount": remaining, "status": status, "notes": notes
+            }).fetchone()[0]
+        else:
+            conn.execute(text("""
+                INSERT INTO events (created_at, event_date, client_name, location, device, hours, start_time, end_time, total_amount, deposit_paid, remaining_amount, status, notes)
+                VALUES (:created_at, :event_date, :client_name, :location, :device, :hours, :start_time, :end_time, :total_amount, :deposit_paid, :remaining_amount, :status, :notes)
+            """), {
+                "created_at": now_str, "event_date": event_date, "client_name": client_name,
+                "location": location, "device": device, "hours": hours, "start_time": start_time,
+                "end_time": end_time, "total_amount": total_amount, "deposit_paid": deposit_paid,
+                "remaining_amount": remaining, "status": status, "notes": notes
+            })
+            ev_id = conn.execute(text("SELECT last_insert_rowid()")).fetchone()[0]
 
-            if deposit_paid > 0:
-                d_id = get_or_create_day_id(event_date)
-                conn.execute(text("""
-                    INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected, event_id)
-                    VALUES (:day_id, :ts, 0, :amount, 'Events', 1, :ev_id)
-                """), {"day_id": d_id, "ts": now_str, "amount": deposit_paid, "ev_id": ev_id})
-                conn.execute(text("""
-                    INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                    VALUES (:ts, :date, 'event_deposit', :amount, 'حجز إيفنت', :notes)
-                """), {"ts": now_str, "date": event_date, "amount": deposit_paid, "notes": f"عربون إيفنت #{ev_id} ({client_name})"})
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+        if deposit_paid > 0:
+            d_id = get_or_create_day_id(event_date)
+            conn.execute(text("""
+                INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected, event_id)
+                VALUES (:day_id, :ts, 0, :amount, 'Events', 1, :ev_id)
+            """), {"day_id": d_id, "ts": now_str, "amount": deposit_paid, "ev_id": ev_id})
+            conn.execute(text("""
+                INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
+                VALUES (:ts, :date, 'event_deposit', :amount, 'حجز إيفنت', :notes)
+            """), {"ts": now_str, "date": event_date, "amount": deposit_paid, "notes": f"عربون إيفنت #{ev_id} ({client_name})"})
 
 def complete_event_settlement(event_id: int, from_branch: str, prints_count: int, transport_cost: float, worker_cost: float):
     now_str = get_egypt_now_str()
@@ -758,79 +650,66 @@ def complete_event_settlement(event_id: int, from_branch: str, prints_count: int
     cash_expenses = transport_cost + worker_cost
     total_exp_for_report = paper_cost + cash_expenses
     
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
-            if ev:
-                rem = float(ev["remaining_amount"])
-                event_date = ev["event_date"]
-                total_rev = float(ev["total_amount"])
-                
-                profit = total_rev - total_exp_for_report
-                d_id = get_or_create_day_id(event_date)
-                
-                if rem > 0:
-                    conn.execute(text("""
-                        INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected, event_id)
-                        VALUES (:day_id, :ts, :prints, :amount, 'Events', 1, :ev_id)
-                    """), {"day_id": d_id, "ts": now_str, "prints": prints_count, "amount": rem, "ev_id": event_id})
-                    conn.execute(text("""
-                        INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                        VALUES (:ts, :date, 'event_settle', :amount, 'باقي إيفنت', :notes)
-                    """), {"ts": now_str, "date": event_date, "amount": rem, "notes": f"تسليم باقي إيفنت #{event_id} ({ev['client_name']})"})
-                
-                if prints_count > 0 and from_branch:
-                    conn.execute(text("""
-                        INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                        VALUES (:ts, 'consumption', :qty, :notes, :branch)
-                    """), {"ts": now_str, "qty": -prints_count, "notes": f"استهلاك ورق إيفنت #{event_id}", "branch": from_branch})
-
-                if cash_expenses > 0:
-                    desc = f"مصروفات نقدية إيفنت #{event_id} ({ev['client_name']}): مواصلات={transport_cost:,.0f}ج، موظف={worker_cost:,.0f}ج"
-                    conn.execute(text("""
-                        INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, event_id, paid_from)
-                        VALUES (:day_id, :ts, :date, :b, :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات', :ev_id, 'drawer')
-                    """), {"day_id": d_id, "ts": now_str, "date": event_date, "b": from_branch if from_branch != "Warehouse" else "9A", "amount": cash_expenses, "desc": desc, "ev_id": event_id})
-
+    with engine.begin() as conn:
+        ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
+        if ev:
+            rem = float(ev["remaining_amount"])
+            event_date = ev["event_date"]
+            total_rev = float(ev["total_amount"])
+            
+            profit = total_rev - total_exp_for_report
+            d_id = get_or_create_day_id(event_date)
+            
+            if rem > 0:
                 conn.execute(text("""
-                    UPDATE events
-                    SET deposit_paid = total_amount, remaining_amount = 0, status = 'تم التنفيذ والتسوية',
-                        prints_used = :prints, paper_cost = :p_cost, transport_cost = :t_cost,
-                        worker_cost = :w_cost, total_expenses = :tot_exp, net_profit = :profit
-                    WHERE id = :id
-                """), {
-                    "prints": prints_count, "p_cost": paper_cost, "t_cost": transport_cost, 
-                    "w_cost": worker_cost, "tot_exp": total_exp_for_report, "profit": profit, "id": event_id
-                })
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+                    INSERT INTO transactions (day_id, timestamp, prints_count, amount_paid, branch, is_collected, event_id)
+                    VALUES (:day_id, :ts, :prints, :amount, 'Events', 1, :ev_id)
+                """), {"day_id": d_id, "ts": now_str, "prints": prints_count, "amount": rem, "ev_id": event_id})
+                conn.execute(text("""
+                    INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
+                    VALUES (:ts, :date, 'event_settle', :amount, 'باقي إيفنت', :notes)
+                """), {"ts": now_str, "date": event_date, "amount": rem, "notes": f"تسليم باقي إيفنت #{event_id} ({ev['client_name']})"})
+            
+            if prints_count > 0 and from_branch:
+                conn.execute(text("""
+                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                    VALUES (:ts, 'consumption', :qty, :notes, :branch)
+                """), {"ts": now_str, "qty": -prints_count, "notes": f"استهلاك ورق إيفنت #{event_id}", "branch": from_branch})
+
+            if cash_expenses > 0:
+                desc = f"مصروفات نقدية إيفنت #{event_id} ({ev['client_name']}): مواصلات={transport_cost:,.0f}ج، موظف={worker_cost:,.0f}ج"
+                conn.execute(text("""
+                    INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, event_id, paid_from)
+                    VALUES (:day_id, :ts, :date, :b, :amount, :desc, 'تسوية إيفنت', 'تشغيل إيفنتات', :ev_id, 'drawer')
+                """), {"day_id": d_id, "ts": now_str, "date": event_date, "b": from_branch if from_branch != "Warehouse" else "9A", "amount": cash_expenses, "desc": desc, "ev_id": event_id})
+
+            conn.execute(text("""
+                UPDATE events
+                SET deposit_paid = total_amount, remaining_amount = 0, status = 'تم التنفيذ والتسوية',
+                    prints_used = :prints, paper_cost = :p_cost, transport_cost = :t_cost,
+                    worker_cost = :w_cost, total_expenses = :tot_exp, net_profit = :profit
+                WHERE id = :id
+            """), {
+                "prints": prints_count, "p_cost": paper_cost, "t_cost": transport_cost, 
+                "w_cost": worker_cost, "tot_exp": total_exp_for_report, "profit": profit, "id": event_id
+            })
 
 def delete_event(event_id: int):
     now_str = get_egypt_now_str()
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
-            if ev:
-                if ev.get("prints_used", 0) > 0 and ev.get("device"):
-                    conn.execute(text("""
-                        INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
-                        VALUES (:ts, 'restock', :qty, :notes, :b)
-                    """), {"ts": now_str, "qty": ev["prints_used"], "notes": f"استرجاع ورق لحذف إيفنت #{event_id}", "b": ev["device"]})
-                
-                conn.execute(text("DELETE FROM safe_transactions WHERE notes LIKE :pattern"), {"pattern": f"%إيفنت #{event_id}%"})
-                conn.execute(text("DELETE FROM expenses WHERE event_id = :id"), {"id": event_id})
-                conn.execute(text("DELETE FROM transactions WHERE event_id = :id"), {"id": event_id})
-                conn.execute(text("DELETE FROM events WHERE id = :id"), {"id": event_id})
-                trans.commit()
-                return True
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            raise e
+    with engine.begin() as conn:
+        ev = conn.execute(text("SELECT * FROM events WHERE id = :id"), {"id": event_id}).mappings().fetchone()
+        if ev:
+            if ev.get("prints_used", 0) > 0 and ev.get("device"):
+                conn.execute(text("""
+                    INSERT INTO inventory (timestamp, action_type, quantity, notes, branch)
+                    VALUES (:ts, 'restock', :qty, :notes, :b)
+                """), {"ts": now_str, "qty": ev["prints_used"], "notes": f"استرجاع ورق لحذف إيفنت #{event_id}", "b": ev["device"]})
+            
+            conn.execute(text("DELETE FROM safe_transactions WHERE notes LIKE :pattern"), {"pattern": f"%إيفنت #{event_id}%"})
+            conn.execute(text("DELETE FROM expenses WHERE event_id = :id"), {"id": event_id})
+            conn.execute(text("DELETE FROM transactions WHERE event_id = :id"), {"id": event_id})
+            conn.execute(text("DELETE FROM events WHERE id = :id"), {"id": event_id})
+            return True
     return False
 
 # ----------------- AUTHENTICATION -----------------
