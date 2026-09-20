@@ -276,17 +276,24 @@ init_db()
 # ----------------- GENERAL & SETTINGS HELPERS -----------------
 def get_or_create_day_id(date_str: str) -> int:
     with engine.begin() as conn:
+        # محاولة البحث عن اليوم أولاً
         row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
-        if not row:
-            if IS_POSTGRES:
-                res = conn.execute(text("INSERT INTO days (date) VALUES (:date) RETURNING id"), {"date": date_str}).fetchone()
-                return res[0]
-            else:
-                conn.execute(text("INSERT INTO days (date) VALUES (:date)"), {"date": date_str})
-                res = conn.execute(text("SELECT last_insert_rowid()")).fetchone()
-                return res[0]
-        return row[0]
-
+        if row:
+            return row[0]
+        
+        # إذا لم يكن موجوداً، نقوم بإضافته مع استخدام ON CONFLICT لضمان عدم حدوث خطأ تنافس (Race Condition)
+        if IS_POSTGRES:
+            res = conn.execute(text("""
+                INSERT INTO days (date) VALUES (:date)
+                ON CONFLICT (date) DO UPDATE SET date = EXCLUDED.date
+                RETURNING id
+            """), {"date": date_str}).fetchone()
+            return res[0]
+        else:
+            conn.execute(text("INSERT OR IGNORE INTO days (date) VALUES (:date)"), {"date": date_str})
+            row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
+            return row[0]
+            
 def get_branch_settings(branch_name: str):
     with engine.connect() as conn:
         row = conn.execute(text("SELECT * FROM branch_settings WHERE branch = :b"), {"b": branch_name}).mappings().fetchone()
@@ -498,11 +505,11 @@ def record_expense(branch_name: str, amount: float, description: str, created_by
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
     
-    # 1. ضمان وجود اليوم في جدول days والحصول على الـ id الخاص به
+    # ضمان الحصول على day_id سليم
     day_id = get_or_create_day_id(today_str)
     
     with engine.begin() as conn:
-        # 2. إدخال المصروف مع تمرير كافة الأعمدة المطلوبة إجبارياً في السكيما (بما فيها date و day_id)
+        # إدخال المصروف مباشرة مع التحقق من الحقول
         conn.execute(text("""
             INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
             VALUES (:day_id, :ts, :date, :branch, :amount, :description, :created_by, :category, :paid_from)
@@ -518,7 +525,7 @@ def record_expense(branch_name: str, amount: float, description: str, created_by
             "paid_from": paid_from
         })
         
-        # 3. إذا كان المصروف مدفوعاً من الخزينة الرئيسية مباشرة، يتم تسجيل حركة الخزينة أيضاً
+        # إذا كان المصروف مدفوعاً من الخزينة الرئيسية
         if paid_from == "safe":
             conn.execute(text("""
                 INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
@@ -530,6 +537,7 @@ def record_expense(branch_name: str, amount: float, description: str, created_by
                 "dest": f"{branch_name} - {category}",
                 "notes": description
             })
+
 def record_safe_deposit(amount: float, notes: str = "إيداع كاش"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
