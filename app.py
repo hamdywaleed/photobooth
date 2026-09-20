@@ -276,24 +276,21 @@ init_db()
 # ----------------- GENERAL & SETTINGS HELPERS -----------------
 def get_or_create_day_id(date_str: str) -> int:
     with engine.begin() as conn:
-        # محاولة البحث عن اليوم أولاً
         row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
-        if row:
-            return row[0]
-        
-        # إذا لم يكن موجوداً، نقوم بإضافته مع استخدام ON CONFLICT لضمان عدم حدوث خطأ تنافس (Race Condition)
-        if IS_POSTGRES:
-            res = conn.execute(text("""
-                INSERT INTO days (date) VALUES (:date)
-                ON CONFLICT (date) DO UPDATE SET date = EXCLUDED.date
-                RETURNING id
-            """), {"date": date_str}).fetchone()
-            return res[0]
-        else:
-            conn.execute(text("INSERT OR IGNORE INTO days (date) VALUES (:date)"), {"date": date_str})
-            row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
-            return row[0]
-            
+        if not row:
+            if IS_POSTGRES:
+                res = conn.execute(text("""
+                    INSERT INTO days (date) VALUES (:date)
+                    ON CONFLICT (date) DO UPDATE SET date = EXCLUDED.date
+                    RETURNING id
+                """), {"date": date_str}).fetchone()
+                return res[0]
+            else:
+                conn.execute(text("INSERT OR IGNORE INTO days (date) VALUES (:date)"), {"date": date_str})
+                res = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
+                return res[0]
+        return row[0]
+
 def get_branch_settings(branch_name: str):
     with engine.connect() as conn:
         row = conn.execute(text("SELECT * FROM branch_settings WHERE branch = :b"), {"b": branch_name}).mappings().fetchone()
@@ -374,6 +371,9 @@ def add_warehouse_stock(packets: int, ink_bottles: float, cost: float, notes: st
     now_str = get_egypt_now_str()
     sheets = packets * 100
     refills = int(round(ink_bottles * 2))
+    today_str = get_egypt_today_str()
+    d_id = get_or_create_day_id(today_str)
+    
     with engine.begin() as conn:
         if sheets > 0:
             conn.execute(text("""
@@ -386,8 +386,6 @@ def add_warehouse_stock(packets: int, ink_bottles: float, cost: float, notes: st
                 VALUES (:ts, 'restock_ink', :qty, :notes, 'Warehouse_Ink')
             """), {"ts": now_str, "qty": refills, "notes": f"شراء حبر: {ink_bottles} علبة ({refills} ملوة) | {notes}"})
         if cost > 0:
-            today_str = get_egypt_today_str()
-            d_id = get_or_create_day_id(today_str)
             conn.execute(text("""
                 INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
                 VALUES (:d_id, :ts, :date, 'Warehouse', :amount, :desc, 'المدير', 'مشتريات مخزن وأصول', 'safe')
@@ -504,12 +502,9 @@ def update_transaction(tx_id: int, branch_name: str, new_prints: int, new_amount
 def record_expense(branch_name: str, amount: float, description: str, created_by: str, category: str = 'نثريات وتشغيل', paid_from: str = 'drawer'):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
-    
-    # ضمان الحصول على day_id سليم
     day_id = get_or_create_day_id(today_str)
     
     with engine.begin() as conn:
-        # إدخال المصروف مباشرة مع التحقق من الحقول
         conn.execute(text("""
             INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
             VALUES (:day_id, :ts, :date, :branch, :amount, :description, :created_by, :category, :paid_from)
@@ -525,7 +520,6 @@ def record_expense(branch_name: str, amount: float, description: str, created_by
             "paid_from": paid_from
         })
         
-        # إذا كان المصروف مدفوعاً من الخزينة الرئيسية
         if paid_from == "safe":
             conn.execute(text("""
                 INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
@@ -1188,11 +1182,9 @@ elif role == "admin":
         opex_df = exp_subset[~exp_subset['category'].isin(['مشتريات مخزن وأصول', 'توزيعات أرباح'])] if not exp_subset.empty else pd.DataFrame()
         paid_opex_total = opex_df['amount'].sum() if not opex_df.empty else 0.0
 
-        # رأس المال الأساسي المسجل (110,000 ج.م) + المسحوبات القديمة 6,600 كقيمة افتتاحية
         total_drawings = all_drawings['amount'].sum() + 6600.0 if not all_drawings.empty else 6600.0
         initial_capital = 110000.0
 
-        # حساب المصاريف الثابتة الشهرية حسب النطاق
         cfg_9a = get_branch_settings("9A")
         cfg_heaven = get_branch_settings("Heaven")
         fixed_9a = float(cfg_9a.get('rent', 0)) + float(cfg_9a.get('salary', 0)) + float(cfg_9a.get('bills', 0))
@@ -1209,38 +1201,28 @@ elif role == "admin":
         elif selected_branch == "Events":
             monthly_fixed_total = 0.0
             cogs_total = total_prints_all * 1.1
-        else: # الكل
+        else:
             monthly_fixed_total = fixed_9a + fixed_heaven
             p_9a = tx_subset[tx_subset['branch'] == '9A']['prints_count'].sum() if not tx_subset.empty else 0
             p_h = tx_subset[tx_subset['branch'] == 'Heaven']['prints_count'].sum() if not tx_subset.empty else 0
             p_ev = tx_subset[tx_subset['branch'] == 'Events']['prints_count'].sum() if not tx_subset.empty else 0
             cogs_total = (p_9a * float(cfg_9a.get("cost_per_print", 1.1))) + (p_h * float(cfg_heaven.get("cost_per_print", 1.1))) + (p_ev * 1.1)
 
-        # 1. إجمالي الالتزامات والمستهدف الشهري (ثابتة + متغيرة تراكمية + ورق)
         total_obligations = monthly_fixed_total + paid_opex_total + cogs_total
-        
-        # 2. المصاريف والالتزامات الفعلية (نثريات كاش + تكلفة الورق الفعلي)
         actual_cash_and_paper_spent = paid_opex_total + cogs_total
-
         net_profit = total_rev_all - total_obligations
 
-        # مؤشر تغطية المصاريف (Break-even Progress)
         if total_obligations > 0:
             break_even_pct = min((total_rev_all / total_obligations) * 100.0, 100.0) if net_profit <= 0 else 100.0
         else:
             break_even_pct = 100.0 if total_rev_all > 0 else 0.0
 
-        # نسبة الأرباح للإيراد الكلي
         profit_margin_pct = (net_profit / total_rev_all * 100.0) if total_rev_all > 0 else 0.0
-
-        # نسبة استرداد رأس المال
         capital_recovery_pct = min((total_drawings / initial_capital) * 100.0, 100.0)
 
-        # حساب أيام الشهر الفعلية الحالية
         now_dt = datetime.now()
         total_days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
 
-        # حسبة عدد الأيام التي احتجناها لتغطية المصاريف وأيام الأرباح
         avg_daily_rev_calc = (total_rev_all / max(len(tx_subset['date'].unique()), 1)) if not tx_subset.empty else 0
         if avg_daily_rev_calc > 0:
             break_even_days_needed = int(round(total_obligations / avg_daily_rev_calc))
@@ -1256,7 +1238,6 @@ elif role == "admin":
         net_uncollected_custody = max(float(uncoll_sales) - float(unsettled_expenses), 0.0)
 
         safe_cash = get_current_safe_balance()
-
         waste_count = get_waste_count(selected_branch)
         free_count = get_free_count(selected_branch)
 
@@ -1268,7 +1249,6 @@ elif role == "admin":
             render_stock_alert(get_current_stock("Heaven"), "Heaven")
         st.markdown("---")
 
-        # ----------------- ترتيب الكروت الرئيسية فوق (5 كروت شاملة المستهدف والفعلي وصافي الربح) -----------------
         st.markdown("#### 📈 الأرباح وقائمة الدخل الحقيقية المؤشرة (Proactive P&L)")
         kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         
@@ -1360,7 +1340,6 @@ elif role == "admin":
             st.metric("💼 نسبة استرداد رأس المال (110 ألف)", f"{capital_recovery_pct:.1f}%", f"المسحب: {total_drawings:,.0f} ج")
             st.progress(int(capital_recovery_pct))
 
-        # ----------------- قسم أيام التشغيل (3 حجات فقط زي ما طلبت) -----------------
         st.markdown("---")
         st.markdown("#### ⏱️ مؤشر كفاءة أيام التشغيل والشهر")
         day_kpi1, day_kpi2, day_kpi3 = st.columns(3)
@@ -1369,7 +1348,6 @@ elif role == "admin":
         day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
 
         st.markdown("---")
-
         st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
         b_list = ["9A", "Heaven"] if selected_branch == "الكل" else ([selected_branch] if selected_branch in ["9A", "Heaven"] else [])
         has_pending = False
@@ -1471,7 +1449,6 @@ elif role == "admin":
                 st.info("لا توجد مصروفات مسجلة اليوم.")
 
         st.markdown("---")
-        # 1. توليد كل الأيام في النطاق الزمني المختار عشان مفيش يوم يسقط لو مبيعاته صفر
         if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
             d_start, d_end = date_range
         else:
@@ -1480,7 +1457,6 @@ elif role == "admin":
         all_calendar_days = pd.date_range(start=d_start, end=d_end).strftime('%Y-%m-%d').tolist()
         base_days_df = pd.DataFrame({'date': all_calendar_days})
 
-        # 2. تجميع الإيرادات والورق لكل يوم
         if not tx_subset.empty:
             days_tx_agg = tx_subset.groupby('date').agg(
                 first_customer_time=('timestamp', 'min'),
@@ -1490,7 +1466,6 @@ elif role == "admin":
                 total_revenue=('amount_paid', 'sum')
             ).reset_index()
 
-            # ساعات الذروة
             tx_subset_tmp = tx_subset.copy()
             tx_subset_tmp['hour'] = pd.to_datetime(tx_subset_tmp['timestamp']).dt.hour
             peak_hours = tx_subset_tmp.groupby(['date', 'hour'])['id'].count().reset_index()
@@ -1501,7 +1476,6 @@ elif role == "admin":
         else:
             days_tx_agg = pd.DataFrame(columns=['date', 'first_customer_time', 'last_customer_time', 'total_customers', 'total_prints', 'total_revenue', 'peak_hour'])
 
-        # دمج كل الأيام مع جدول المعاملات (عشان الأيام اللي مفيش فيها مبيعات تظهر بـ 0)
         behavior_df = base_days_df.merge(days_tx_agg, on='date', how='left')
         behavior_df['total_customers'] = behavior_df['total_customers'].fillna(0)
         behavior_df['total_prints'] = behavior_df['total_prints'].fillna(0)
@@ -1510,24 +1484,21 @@ elif role == "admin":
         behavior_df['date_obj'] = pd.to_datetime(behavior_df['date'])
         behavior_df['day_name'] = behavior_df['date_obj'].dt.day_name().map(ARABIC_DAYS)
 
-        # نثريات اليوم
         day_exp_map = exp_subset.groupby('operational_date')['amount'].sum().to_dict() if not exp_subset.empty else {}
         behavior_df['day_expenses'] = behavior_df['date'].map(day_exp_map).fillna(0.0)
 
-        # الثابت اليومي الصحيح حسب النطاق أو الفرع
         if selected_branch == "9A":
             fixed_daily_per_branch = 255.0
         elif selected_branch == "Heaven":
             fixed_daily_per_branch = 167.0
         elif selected_branch == "Events":
             fixed_daily_per_branch = 0.0
-        else: # الكل (مجموع ثوابت الفرعين 255 + 167 = 422)
+        else:
             fixed_daily_per_branch = 422.0
 
         cfg_cost_val = float(get_branch_settings("9A").get("cost_per_print", 1.1))
         behavior_df['paper_cost'] = behavior_df['total_prints'] * cfg_cost_val
         
-        # صافي ربح اليوم (لو مفيش إيراد ولا نثريات هيطلع بالسالب مساوي للثابت اليومي تماماً)
         behavior_df['daily_net_profit'] = behavior_df['total_revenue'] - behavior_df['paper_cost'] - behavior_df['day_expenses'] - fixed_daily_per_branch
 
         def extract_time(ts):
@@ -1542,12 +1513,10 @@ elif role == "admin":
         display_df = behavior_df[['date', 'day_name', 'first_time', 'last_time', 'peak_str', 'total_customers', 'total_prints', 'total_revenue', 'day_expenses', 'daily_net_profit']].copy()
         display_df.columns = ['تاريخ يوم العمل', 'اليوم', 'أول عملية', 'آخر عملية', 'ساعة الذروة', 'العمليات', 'الورق', 'الإيراد (ج.م)', 'نثريات (ج)', 'صافي ربح اليوم (ج)']
 
-        # تقريب الأرقام لأعلى وإزالة الأصفار العشرية
         display_df['الإيراد (ج.م)'] = display_df['الإيراد (ج.م)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
         display_df['نثريات (ج)'] = display_df['نثريات (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
         display_df['صافي ربح اليوم (ج)'] = display_df['صافي ربح اليوم (ج)'].apply(lambda x: int(math.ceil(x)) if pd.notna(x) else 0)
 
-        # تلوين الصفوف (أخضر للمكسب، أحمر للخسارة وعجز الثابت)
         def color_profit_rows(row):
             val = row['صافي ربح اليوم (ج)']
             if val > 0:
@@ -1559,51 +1528,52 @@ elif role == "admin":
 
         styled_df = display_df.style.apply(color_profit_rows, axis=1)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
         col_chart1, col_chart2 = st.columns(2)
         with col_chart1:
-                st.markdown("##### 📉 الإيرادات والعمليات خلال الفترة")
-                fig_trend = go.Figure()
-                fig_trend.add_trace(go.Scatter(x=behavior_df['date'], y=behavior_df['total_revenue'], mode='lines+markers', name='الإيراد (ج.م)', line=dict(color='#00CC96', width=3)))
-                fig_trend.add_trace(go.Bar(x=behavior_df['date'], y=behavior_df['total_customers'], name='عدد العمليات', yaxis='y2', marker_color='rgba(99, 110, 250, 0.45)'))
-                fig_trend.update_layout(yaxis=dict(title='الإيراد (ج.م)'), yaxis2=dict(title='العمليات', overlaying='y', side='right', showgrid=False), hovermode="x unified", legend=dict(orientation="h", y=1.15), margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_trend, use_container_width=True)
+            st.markdown("##### 📉 الإيرادات والعمليات خلال الفترة")
+            fig_trend = go.Figure()
+            fig_trend.add_trace(go.Scatter(x=behavior_df['date'], y=behavior_df['total_revenue'], mode='lines+markers', name='الإيراد (ج.م)', line=dict(color='#00CC96', width=3)))
+            fig_trend.add_trace(go.Bar(x=behavior_df['date'], y=behavior_df['total_customers'], name='عدد العمليات', yaxis='y2', marker_color='rgba(99, 110, 250, 0.45)'))
+            fig_trend.update_layout(yaxis=dict(title='الإيراد (ج.م)'), yaxis2=dict(title='العمليات', overlaying='y', side='right', showgrid=False), hovermode="x unified", legend=dict(orientation="h", y=1.15), margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_trend, use_container_width=True)
 
         with col_chart2:
-                st.markdown("##### 📅 الإيرادات حسب أيام الأسبوع")
-                weekday_stats = behavior_df.groupby('day_name').agg({'total_revenue': 'sum', 'total_customers': 'sum'}).reset_index()
-                day_order = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"]
-                weekday_stats['day_name'] = pd.Categorical(weekday_stats['day_name'], categories=day_order, ordered=True)
-                weekday_stats = weekday_stats.sort_values('day_name')
-                fig_week = px.bar(weekday_stats, x='day_name', y='total_revenue', color='total_revenue', custom_data=['total_customers'], labels={'day_name': 'اليوم', 'total_revenue': 'الإيراد (ج.م)'}, color_continuous_scale='Greens')
-                fig_week.update_traces(hovertemplate="<b>%{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
-                fig_week.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_week, use_container_width=True)
+            st.markdown("##### 📅 الإيرادات حسب أيام الأسبوع")
+            weekday_stats = behavior_df.groupby('day_name').agg({'total_revenue': 'sum', 'total_customers': 'sum'}).reset_index()
+            day_order = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"]
+            weekday_stats['day_name'] = pd.Categorical(weekday_stats['day_name'], categories=day_order, ordered=True)
+            weekday_stats = weekday_stats.sort_values('day_name')
+            fig_week = px.bar(weekday_stats, x='day_name', y='total_revenue', color='total_revenue', custom_data=['total_customers'], labels={'day_name': 'اليوم', 'total_revenue': 'الإيراد (ج.م)'}, color_continuous_scale='Greens')
+            fig_week.update_traces(hovertemplate="<b>%{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
+            fig_week.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_week, use_container_width=True)
 
         col_chart3, col_chart4 = st.columns(2)
         with col_chart3:
-                st.markdown("##### 🔥 ساعات الذروة المالية وحركة الزبائن")
-                tx_hour_df = tx_subset.copy()
-                if not tx_hour_df.empty:
-                    tx_hour_df['hour'] = pd.to_datetime(tx_hour_df['timestamp']).dt.hour
-                    hourly = tx_hour_df.groupby('hour').agg(total_revenue=('amount_paid', 'sum'), total_customers=('id', 'count')).reset_index()
-                    hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x:02d}:00")
-                else:
-                    hourly = pd.DataFrame(columns=['hour', 'total_revenue', 'total_customers', 'hour_str'])
-                
-                fig_hour = px.bar(hourly, x='hour_str', y='total_revenue', color='total_revenue', custom_data=['total_customers'], labels={'hour_str': 'الساعة', 'total_revenue': 'إجمالي الإيراد (ج.م)'}, color_continuous_scale='Sunset')
-                fig_hour.update_traces(hovertemplate="<b>الساعة: %{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
-                fig_hour.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_hour, use_container_width=True)
+            st.markdown("##### 🔥 ساعات الذروة المالية وحركة الزبائن")
+            tx_hour_df = tx_subset.copy()
+            if not tx_hour_df.empty:
+                tx_hour_df['hour'] = pd.to_datetime(tx_hour_df['timestamp']).dt.hour
+                hourly = tx_hour_df.groupby('hour').agg(total_revenue=('amount_paid', 'sum'), total_customers=('id', 'count')).reset_index()
+                hourly['hour_str'] = hourly['hour'].apply(lambda x: f"{x:02d}:00")
+            else:
+                hourly = pd.DataFrame(columns=['hour', 'total_revenue', 'total_customers', 'hour_str'])
+            
+            fig_hour = px.bar(hourly, x='hour_str', y='total_revenue', color='total_revenue', custom_data=['total_customers'], labels={'hour_str': 'الساعة', 'total_revenue': 'إجمالي الإيراد (ج.م)'}, color_continuous_scale='Sunset')
+            fig_hour.update_traces(hovertemplate="<b>الساعة: %{x}</b><br>الإيراد: %{y:,.0f} ج.م<br>عدد العمليات: %{customdata[0]:,}<extra></extra>")
+            fig_hour.update_layout(coloraxis_showscale=False, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_hour, use_container_width=True)
 
         with col_chart4:
-                st.markdown("##### 🍩 توزيع المصاريف التشغيلية")
-                if not opex_df.empty:
-                    exp_cat_summary = opex_df.groupby('category')['amount'].sum().reset_index()
-                    fig_pie = px.pie(exp_cat_summary, values='amount', names='category', hole=0.45, color_discrete_sequence=px.colors.qualitative.Pastel)
-                    fig_pie.update_layout(margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', showlegend=True)
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                else:
-                    st.info("لا توجد مصاريف تشغيلية لتوزيعها.")
+            st.markdown("##### 🍩 توزيع المصاريف التشغيلية")
+            if not opex_df.empty:
+                exp_cat_summary = opex_df.groupby('category')['amount'].sum().reset_index()
+                fig_pie = px.pie(exp_cat_summary, values='amount', names='category', hole=0.45, color_discrete_sequence=px.colors.qualitative.Pastel)
+                fig_pie.update_layout(margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', showlegend=True)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("لا توجد مصاريف تشغيلية لتوزيعها.")
 
         st.markdown("---")
         st.subheader("🕵️ سجل المراقبة والتعديلات (Audit Logs)")
