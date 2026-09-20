@@ -494,22 +494,40 @@ def update_transaction(tx_id: int, branch_name: str, new_prints: int, new_amount
             return True
     return False
 
-def record_expense(branch_name: str, amount: float, description: str, created_by: str, category: str = "نثريات وتشغيل", paid_from: str = "drawer"):
+def record_expense(branch_name: str, amount: float, description: str, created_by: str, category: str = 'نثريات وتشغيل', paid_from: str = 'drawer'):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
     day_id = get_or_create_day_id(today_str)
+    
     with engine.begin() as conn:
+        # إدخال المصروف بضمان حفظ الـ day_id والـ date بـ جدول expenses
         conn.execute(text("""
             INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
             VALUES (:day_id, :ts, :date, :b, :amount, :desc, :user, :cat, :p_from)
-        """), {"day_id": day_id, "ts": now_str, "date": today_str, "b": branch_name, "amount": amount, "desc": description, "user": created_by, "cat": category, "p_from": paid_from})
+        """), {
+            "day_id": day_id, 
+            "ts": now_str, 
+            "date": today_str, 
+            "b": branch_name, 
+            "amount": amount, 
+            "desc": description, 
+            "user": created_by, 
+            "cat": category, 
+            "p_from": paid_from
+        })
         
+        # إذا كان المصروف مدفوعاً من الخزينة الرئيسية مباشرة، يتم تسجيل حركة الخزينة أيضاً
         if paid_from == "safe":
             conn.execute(text("""
                 INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
                 VALUES (:ts, :date, 'expense', :amount, :dest, :notes)
-            """), {"ts": now_str, "date": today_str, "amount": -amount, "dest": f"{branch_name} - {category}", "notes": description})
-
+            """), {
+                "ts": now_str, 
+                "date": today_str, 
+                "amount": -amount, 
+                "dest": f"{branch_name} - {category}", 
+                "notes": description
+            })
 def record_safe_deposit(amount: float, notes: str = "إيداع كاش"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
@@ -1433,9 +1451,9 @@ elif role == "admin":
                 f_e = "AND (e.branch = :branch OR e.branch = 'General')" if selected_branch != "الكل" else ""
                 p_e = {"date": today_b_str, "branch": selected_branch} if selected_branch != "الكل" else {"date": today_b_str}
                 today_admin_exp = pd.read_sql_query(text(f"""
-                    SELECT e.timestamp, e.branch, e.amount, e.description, e.created_by 
-                    FROM expenses e JOIN days d ON e.day_id = d.id
-                    WHERE d.date = :date {f_e} ORDER BY e.timestamp DESC
+                    SELECT e.timestamp, e.branch, e.amount, e.description, e.created_by, e.category 
+                    FROM expenses e
+                    WHERE e.date = :date {f_e} ORDER BY e.timestamp DESC
                 """), conn, params=p_e)
             if not today_admin_exp.empty:
                 st.dataframe(today_admin_exp.rename(columns={'timestamp': 'الوقت', 'branch': 'الفرع', 'amount': 'المبلغ (ج.م)', 'description': 'الوصف', 'created_by': 'بواسطة'}), use_container_width=True, hide_index=True)
