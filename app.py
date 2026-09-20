@@ -274,30 +274,6 @@ def init_db():
 init_db()
 
 # ----------------- GENERAL & SETTINGS HELPERS -----------------
-def get_or_create_day_id(date_str: str) -> int:
-    with engine.connect() as conn:
-        row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
-        if row:
-            return row[0]
-        
-        trans = conn.begin()
-        try:
-            if IS_POSTGRES:
-                res = conn.execute(text("""
-                    INSERT INTO days (date) VALUES (:date)
-                    ON CONFLICT (date) DO UPDATE SET date = EXCLUDED.date
-                    RETURNING id
-                """), {"date": date_str}).fetchone()
-                day_id = res[0]
-            else:
-                conn.execute(text("INSERT OR IGNORE INTO days (date) VALUES (:date)"), {"date": date_str})
-                res = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
-                day_id = res[0]
-            trans.commit()
-            return day_id
-        except Exception as e:
-            trans.rollback()
-            raise e
 
 def get_branch_settings(branch_name: str):
     with engine.connect() as conn:
@@ -581,30 +557,57 @@ def update_transaction(tx_id: int, branch_name: str, new_prints: int, new_amount
             raise e
     return False
 
+def get_or_create_day_id(date_str: str) -> int:
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
+        if row:
+            return row[0]
+        
+        if IS_POSTGRES:
+            res = conn.execute(text("""
+                INSERT INTO days (date) VALUES (:date)
+                ON CONFLICT (date) DO UPDATE SET date = EXCLUDED.date
+                RETURNING id
+            """), {"date": date_str}).fetchone()
+            return res[0]
+        else:
+            conn.execute(text("INSERT OR IGNORE INTO days (date) VALUES (:date)"), {"date": date_str})
+            res = conn.execute(text("SELECT id FROM days WHERE date = :date"), {"date": date_str}).fetchone()
+            return res[0]
+
 def record_expense(branch_name: str, amount: float, description: str, created_by: str, category: str = "نثريات وتشغيل", paid_from: str = "drawer"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
     day_id = get_or_create_day_id(today_str)
     
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
+            VALUES (:day_id, :ts, :date, :b, :amount, :desc, :user, :cat, :p_from)
+        """), {
+            "day_id": day_id, 
+            "ts": now_str, 
+            "date": today_str, 
+            "b": branch_name, 
+            "amount": amount, 
+            "desc": description, 
+            "user": created_by, 
+            "cat": category, 
+            "p_from": paid_from
+        })
+        
+        if paid_from == "safe":
             conn.execute(text("""
-                INSERT INTO expenses (day_id, timestamp, date, branch, amount, description, created_by, category, paid_from)
-                VALUES (:day_id, :ts, :date, :b, :amount, :desc, :user, :cat, :p_from)
-            """), {"day_id": day_id, "ts": now_str, "date": today_str, "b": branch_name, "amount": amount, "desc": description, "user": created_by, "cat": category, "p_from": paid_from})
-            
-            if paid_from == "safe":
-                conn.execute(text("""
-                    INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                    VALUES (:ts, :date, 'expense', :amount, :dest, :notes)
-                """), {"ts": now_str, "date": today_str, "amount": -amount, "dest": f"{branch_name} - {category}", "notes": description})
-            
-            trans.commit()
-        except Exception as e:
-            trans.rollback()
-            st.error(f"فشل تسجيل المصروف: {e}")
-            raise e
+                INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
+                VALUES (:ts, :date, 'expense', :amount, :dest, :notes)
+            """), {
+                "ts": now_str, 
+                "date": today_str, 
+                "amount": -amount, 
+                "dest": f"{branch_name} - {category}", 
+                "notes": description
+            })
+
 
 def record_safe_deposit(amount: float, notes: str = "إيداع كاش"):
     now_str = get_egypt_now_str()
