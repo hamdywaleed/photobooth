@@ -1282,16 +1282,27 @@ elif role == "admin":
                 st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
 
         with kpi4:
-            st.metric("💸 المصاريف الفعلية + الورق", f"{actual_cash_and_paper_spent:,.0f} ج.م", delta="المنصرف الفعلي")
+            # جلب كل المصروفات الفعلية بدون أي استثناء لأي بند
+            all_actual_opex_df = exp_subset.copy() if not exp_subset.empty else pd.DataFrame()
+            total_actual_cash_spent = all_actual_opex_df['amount'].sum() if not all_actual_opex_df.empty else 0.0
+            
+            total_actual_spent_with_paper = total_actual_cash_spent + cogs_total
+
+            st.metric("💸 المصاريف الفعلية + الورق", f"{total_actual_spent_with_paper:,.0f} ج.م", delta="المنصرف الفعلي")
             with st.popover("ℹ️ تفاصيل المصاريف الفعلية"):
-                st.markdown("##### 💸 تفاصيل المنصرف الفعلي")
-                st.write(f"- النثريات الفعلية المدفوعة: {paid_opex_total:,.0f} ج")
+                st.markdown("##### 💸 تفاصيل المنصرف الفعلي لكافة البنود")
+                
+                # تجميع وعرض جميع البنود المسجلة في الداتا بيز بمبالغها الفعلية
+                if not all_actual_opex_df.empty:
+                    cat_grouped = all_actual_opex_df.groupby('category')['amount'].sum().reset_index()
+                    for _, row in cat_grouped.iterrows():
+                        st.write(f"- إجمالي **{row['category']}**: {row['amount']:,.0f} ج")
+                else:
+                    st.write("- لا توجد مصروفات مسجلة في هذه الفترة.")
+
                 st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
-                with engine.connect() as conn:
-                    recent_exp = pd.read_sql_query(text("SELECT timestamp, branch, amount, description FROM expenses ORDER BY timestamp DESC LIMIT 5"), conn)
-                if not recent_exp.empty:
-                    st.markdown("آخر المصروفات المسجلة:")
-                    st.dataframe(recent_exp, use_container_width=True, hide_index=True)
+                st.markdown("---")
+                st.write(f"**إجمالي المنصرف النقدي والورقي:** {total_actual_spent_with_paper:,.0f} ج")
 
         with kpi5:
             st.metric("📈 صافي الأرباح الصافية", f"{net_profit:,.0f} ج.م", delta=f"{net_profit:,.0f}", delta_color="normal")
