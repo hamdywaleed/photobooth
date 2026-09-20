@@ -811,18 +811,18 @@ if role == "employee":
                     record_transaction(branch, 1, 30.0)
                     st.rerun()
         with btn_col2:
-            if st.button("🎞️ كارتين\n(50 ج - 2 ورقة)", use_container_width=True):
+            if st.button("🎞️ كارتين\n(60 ج - 2 ورقة)", use_container_width=True):
                 if current_stock < 2:
                     st.error("⚠️ رصيد الورق غير كافٍ!")
                 else:
-                    record_transaction(branch, 2, 50.0)
+                    record_transaction(branch, 2, 60.0)
                     st.rerun()
         with btn_col3:
-            if st.button("📸 عرض 5 كروت\n(100 ج - 5 ورقات)", use_container_width=True):
-                if current_stock < 5:
+            if st.button("📸 عرض 4 كروت\n(100 ج - 4 ورقات)", use_container_width=True):
+                if current_stock < 4:
                     st.error("⚠️ رصيد الورق غير كافٍ!")
                 else:
-                    record_transaction(branch, 5, 100.0)
+                    record_transaction(branch, 4, 100.0)
                     st.rerun()
     else:
         btn_col1, btn_col2, btn_col3 = st.columns(3)
