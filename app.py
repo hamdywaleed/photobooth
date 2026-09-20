@@ -530,7 +530,7 @@ def record_expense(branch_name: str, amount: float, description: str, created_by
                 "dest": f"{branch_name} - {category}",
                 "notes": description
             })
-    def record_safe_deposit(amount: float, notes: str = "إيداع كاش"):
+def record_safe_deposit(amount: float, notes: str = "إيداع كاش"):
     now_str = get_egypt_now_str()
     today_str = get_egypt_today_str()
     with engine.begin() as conn:
