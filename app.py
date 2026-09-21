@@ -1057,7 +1057,7 @@ elif role == "admin":
                         with st.form(f"settle_form_{ev['id']}"):
                             c_b, c_p = st.columns(2)
                             with c_b:
-                                default_idx = 0 if ev.get('device'] == '9A' else 1
+                                default_idx = 0 if ev.get('device') == '9A' else 1
                                 settle_branch = st.selectbox("🏢 خصم الورق من عهدة فرع:", ["9A", "Heaven", "Warehouse"], index=default_idx, key=f"b_{ev['id']}")
                             with c_p:
                                 in_prints = c_p.number_input("الورق المستهلك:", min_value=0, max_value=2000, value=50, step=10, key=f"p_{ev['id']}")
