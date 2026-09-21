@@ -547,45 +547,6 @@ def record_safe_withdrawal(amount: float, receiver: str, notes: str = "سحب أ
             VALUES (:ts, :date, :amount, :rec, :notes)
         """), {"ts": now_str, "date": today_str, "amount": amount, "rec": receiver, "notes": notes})
 
-def settle_drawer_custody(branch_name: str, amount_to_collect: float):
-    now_str = get_egypt_now_str()
-    today_str = get_egypt_today_str()
-    with engine.begin() as conn:
-        unsettled_exp = conn.execute(text("""
-            SELECT COALESCE(SUM(amount), 0) FROM expenses 
-            WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
-        """), {"b": branch_name}).fetchone()[0]
-        unsettled_exp = float(unsettled_exp)
-
-        conn.execute(text("""
-            UPDATE expenses SET category = 'نثريات مسواة' 
-            WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
-        """), {"b": branch_name})
-
-        sales_needed = amount_to_collect + unsettled_exp
-
-        uncoll = conn.execute(text("""
-            SELECT id, amount_paid FROM transactions 
-            WHERE branch = :b AND is_collected = 0 ORDER BY id ASC
-        """), {"b": branch_name}).mappings().fetchall()
-
-        rem = sales_needed
-        for tx in uncoll:
-            t_amt = float(tx["amount_paid"])
-            if rem >= t_amt:
-                conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE id = :id"), {"id": tx["id"]})
-                rem -= t_amt
-            elif rem > 0:
-                conn.execute(text("UPDATE transactions SET is_collected = 1 WHERE id = :id"), {"id": tx["id"]})
-                rem = 0
-                break
-
-        if amount_to_collect > 0:
-            conn.execute(text("""
-                INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
-                VALUES (:ts, :date, 'collection', :amount, :src, 'توريد عهدة درج')
-            """), {"ts": now_str, "date": today_str, "amount": amount_to_collect, "src": f"فرع {branch_name}"})
-
 def get_current_safe_balance():
     with engine.connect() as conn:
         res = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM safe_transactions")).fetchone()
@@ -1177,7 +1138,6 @@ elif role == "admin":
         total_rev_all = tx_subset['amount_paid'].sum() if not tx_subset.empty else 0.0
         total_prints_all = tx_subset['prints_count'].sum() if not tx_subset.empty else 0
         
-        # استبعاد البنود الثابتة ومشتريات المخزن من النثريات المتغيرة لعدم تكرار الحساب
         excluded_categories = ['توزيعات أرباح', 'إيجار', 'مرتبات وعمالة', 'فواتير وأقساط']
         opex_df = exp_subset[~exp_subset['category'].isin(excluded_categories)] if not exp_subset.empty else pd.DataFrame()
         paid_opex_total = opex_df['amount'].sum() if not opex_df.empty else 0.0
@@ -1282,24 +1242,19 @@ elif role == "admin":
                 st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
 
         with kpi4:
-            # جلب كل المصروفات الفعلية بدون أي استثناء لأي بند
             all_actual_opex_df = exp_subset.copy() if not exp_subset.empty else pd.DataFrame()
             total_actual_cash_spent = all_actual_opex_df['amount'].sum() if not all_actual_opex_df.empty else 0.0
-            
             total_actual_spent_with_paper = total_actual_cash_spent + cogs_total
 
             st.metric("💸 المصاريف الفعلية + الورق", f"{total_actual_spent_with_paper:,.0f} ج.م", delta="المنصرف الفعلي")
             with st.popover("ℹ️ تفاصيل المصاريف الفعلية"):
                 st.markdown("##### 💸 تفاصيل المنصرف الفعلي لكافة البنود")
-                
-                # تجميع وعرض جميع البنود المسجلة في الداتا بيز بمبالغها الفعلية
                 if not all_actual_opex_df.empty:
                     cat_grouped = all_actual_opex_df.groupby('category')['amount'].sum().reset_index()
                     for _, row in cat_grouped.iterrows():
                         st.write(f"- إجمالي **{row['category']}**: {row['amount']:,.0f} ج")
                 else:
                     st.write("- لا توجد مصروفات مسجلة في هذه الفترة.")
-
                 st.write(f"- تكلفة الورق الفعلي: {cogs_total:,.0f} ج")
                 st.markdown("---")
                 st.write(f"**إجمالي المنصرف النقدي والورقي:** {total_actual_spent_with_paper:,.0f} ج")
@@ -1340,6 +1295,7 @@ elif role == "admin":
             st.metric("💼 إجمالي الأرباح المسحوبة", f"{total_drawings:,.0f} ج.م", delta="مسحوبات شركاء", delta_color="off")
         with kpi8:
             st.metric("🗑️ تالف / 🎁 مجاني", f"{waste_count} تالف | {free_count} هدايا")
+        
         bar1, bar2, bar3 = st.columns(3)
         with bar1:
             st.metric("🎯 نسبة تغطية المصاريف والتزامات", f"{break_even_pct:.1f}%")
@@ -1358,36 +1314,83 @@ elif role == "admin":
         day_kpi2.metric("🚀 أيام الأرباح للشهر", f"{profit_days_count} يوم")
         day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
 
+        # ==============================================================
+        # القسم الجديد: تصفية وتوريد عهدة الفروع بالأيام (زرار لكل يوم)
+        # ==============================================================
         st.markdown("---")
-        st.markdown("### 📥 تصفية وتوريد عهدة الفروع")
+        st.subheader("📥 تصفية وتوريد عهدة الفروع (زرار لكل يوم)")
         b_list = ["9A", "Heaven"] if selected_branch == "الكل" else ([selected_branch] if selected_branch in ["9A", "Heaven"] else [])
-        has_pending = False
+        has_pending_days = False
 
         for b_name in b_list:
             with engine.connect() as conn:
-                u_s = conn.execute(text("SELECT COALESCE(SUM(amount_paid), 0) FROM transactions WHERE branch = :b AND is_collected = 0"), {"b": b_name}).fetchone()[0]
-                u_e = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE branch = :b AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'"), {"b": b_name}).fetchone()[0]
-            u_s, u_e = float(u_s), float(u_e)
-            net_d = max(u_s - u_e, 0.0)
+                pending_days_df = pd.read_sql_query(text("""
+                    SELECT DISTINCT d.date 
+                    FROM days d
+                    LEFT JOIN transactions t ON t.day_id = d.id AND t.branch = :b AND t.is_collected = 0
+                    LEFT JOIN expenses e ON e.day_id = d.id AND e.branch = :b AND e.category = 'نثريات وتشغيل' AND e.paid_from = 'drawer'
+                    WHERE t.id IS NOT NULL OR e.id IS NOT NULL
+                    ORDER BY d.date ASC
+                """), conn, params={"b": b_name})
 
-            if u_s > 0 or u_e > 0:
-                has_pending = True
-                with st.expander(f"🏢 فرع {b_name} | الصافي المتاح بالدرج: {net_d:,.0f} ج.م (مبيعات: {u_s:,.0f} ج - نثريات: {u_e:,.0f} ج)", expanded=True):
-                    col_p1, col_p2 = st.columns([3, 2])
-                    with col_p1:
-                        amt_to_take = st.number_input(f"المبلغ المستلم للتوريد إلى الخزينة (ج.م):", min_value=0.0, max_value=float(net_d), value=float(net_d), step=50.0, key=f"inp_{b_name}")
-                        rem_in_drawer = net_d - amt_to_take
-                        if rem_in_drawer > 0:
-                            st.info(f"💡 سيتبقى في درج الفرع فكة مستمرة: **{rem_in_drawer:,.0f} ج.م**")
-                    with col_p2:
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        if st.button(f"تأكيد استلام ({amt_to_take:,.0f} ج) للخزينة", key=f"btn_{b_name}", use_container_width=True):
-                            if amt_to_take > 0:
-                                settle_drawer_custody(b_name, amt_to_take)
+            if not pending_days_df.empty:
+                has_pending_days = True
+                with st.expander(f"🏢 فرع {b_name} | الأيام المعلقة لتوريدها", expanded=True):
+                    
+                    for _, d_row in pending_days_df.iterrows():
+                        d_str = d_row['date']
+                        
+                        with engine.connect() as conn:
+                            d_sales = conn.execute(text("""
+                                SELECT COALESCE(SUM(t.amount_paid), 0) 
+                                FROM transactions t JOIN days d ON t.day_id = d.id 
+                                WHERE d.date = :date AND t.branch = :b AND t.is_collected = 0
+                            """), {"date": d_str, "b": b_name}).fetchone()[0]
+                            
+                            d_exp = conn.execute(text("""
+                                SELECT COALESCE(SUM(amount), 0) 
+                                FROM expenses 
+                                WHERE branch = :b AND (day_id IN (SELECT id FROM days WHERE date = :date) OR date = :date) 
+                                AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
+                            """), {"date": d_str, "b": b_name}).fetchone()[0]
+                        
+                        net_day_cash = float(d_sales) - float(d_exp)
+                        
+                        col_info, col_btn = st.columns([3, 1])
+                        with col_info:
+                            st.markdown(f"📅 **يوم {d_str}** &nbsp; | &nbsp; الصافي بالدرج: **{net_day_cash:,.0f} ج.م** &nbsp; `(مبيعات: {float(d_sales):,.0f} - نثريات: {float(d_exp):,.0f})`")
+                        
+                        with col_btn:
+                            if st.button(f"توريد يوم {d_str}", key=f"btn_day_{b_name}_{d_str}", use_container_width=True):
+                                now_str = get_egypt_now_str()
+                                today_str = get_egypt_today_str()
+                                
+                                with engine.begin() as conn:
+                                    conn.execute(text("""
+                                        UPDATE expenses SET category = 'نثريات مسواة' 
+                                        WHERE branch = :b AND (day_id IN (SELECT id FROM days WHERE date = :date) OR date = :date) 
+                                        AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
+                                    """), {"b": b_name, "date": d_str})
+                                    
+                                    conn.execute(text("""
+                                        UPDATE transactions SET is_collected = 1 
+                                        WHERE branch = :b AND day_id IN (SELECT id FROM days WHERE date = :date) AND is_collected = 0
+                                    """), {"b": b_name, "date": d_str})
+
+                                    if net_day_cash > 0:
+                                        conn.execute(text("""
+                                            INSERT INTO safe_transactions (timestamp, date, type, amount, source_destination, notes)
+                                            VALUES (:ts, :date, 'collection', :amount, :src, :notes)
+                                        """), {
+                                            "ts": now_str, "date": today_str, "amount": net_day_cash, 
+                                            "src": f"فرع {b_name}", "notes": f"توريد عهدة يوم كامل ({d_str})"
+                                        })
+                                
+                                st.success(f"تم توريد يوم {d_str} بالكامل بنجاح!")
                                 st.rerun()
 
-        if not has_pending:
-            st.success("✅ العهدة مع الموظفين صفر حالياً، لا توجد أي مبالغ معلقة بالأدراج!")
+        if not has_pending_days:
+            st.success("✅ جميع الأيام مصّفاة ولا توجد أي عهد أيام معلقة!")
 
         st.markdown("---")
         c_act1, c_act2, c_act3 = st.columns(3)
@@ -1644,3 +1647,4 @@ elif role == "admin":
                         exp_exp = pd.read_sql_query(text("SELECT e.timestamp, d.date, e.branch, e.amount, e.description, e.created_by, e.category FROM expenses e JOIN days d ON e.day_id = d.id ORDER BY e.timestamp DESC"), conn)
                     csv_exp = exp_exp.to_csv(index=False).encode('utf-8-sig')
                     st.download_button("📥 اضغط لبدء تنزيل شيت المصروفات", data=csv_exp, file_name=f"expenses_{today_date_str}.csv", mime="text/csv", use_container_width=True)
+
