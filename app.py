@@ -1057,7 +1057,7 @@ elif role == "admin":
                         with st.form(f"settle_form_{ev['id']}"):
                             c_b, c_p = st.columns(2)
                             with c_b:
-                                default_idx = 0 if ev.get('device') == '9A' else 1
+                                default_idx = 0 if ev.get('device'] == '9A' else 1
                                 settle_branch = st.selectbox("🏢 خصم الورق من عهدة فرع:", ["9A", "Heaven", "Warehouse"], index=default_idx, key=f"b_{ev['id']}")
                             with c_p:
                                 in_prints = c_p.number_input("الورق المستهلك:", min_value=0, max_value=2000, value=50, step=10, key=f"p_{ev['id']}")
@@ -1315,7 +1315,7 @@ elif role == "admin":
         day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
 
         # ==============================================================
-        # قسم توريد عهدة الفروع بالأيام (مع كتابة اسم اليوم جنب التاريخ)
+        # قسم توريد عهدة الفروع بالأيام (مع إجمالي العهدة فوق)
         # ==============================================================
         st.markdown("---")
         st.subheader("📥 تصفية وتوريد عهدة الفروع (الأيام الكاملة)")
@@ -1335,35 +1335,55 @@ elif role == "admin":
 
             if not pending_days_df.empty:
                 has_pending_days = True
-                with st.expander(f"🏢 فرع {b_name} | الأيام المعلقة لتوريدها", expanded=True):
+                
+                # حساب إجمالي العهدة المعلقة لهذا الفرع قبل العرض
+                total_branch_pending_cash = 0.0
+                days_calc_list = []
+                
+                for _, d_row in pending_days_df.iterrows():
+                    d_str = d_row['date']
+                    dt_obj = datetime.strptime(d_str, "%Y-%m-%d")
+                    eng_day_name = dt_obj.strftime("%A")
+                    arabic_day_name = ARABIC_DAYS.get(eng_day_name, eng_day_name)
                     
-                    for _, d_row in pending_days_df.iterrows():
-                        d_str = d_row['date']
+                    with engine.connect() as conn:
+                        d_sales = conn.execute(text("""
+                            SELECT COALESCE(SUM(t.amount_paid), 0) 
+                            FROM transactions t JOIN days d ON t.day_id = d.id 
+                            WHERE d.date = :date AND t.branch = :b AND t.is_collected = 0
+                        """), {"date": d_str, "b": b_name}).fetchone()[0]
                         
-                        # حساب اسم اليوم بالعربي بناءً على التاريخ
-                        dt_obj = datetime.strptime(d_str, "%Y-%m-%d")
-                        eng_day_name = dt_obj.strftime("%A")
-                        arabic_day_name = ARABIC_DAYS.get(eng_day_name, eng_day_name)
-                        
-                        with engine.connect() as conn:
-                            d_sales = conn.execute(text("""
-                                SELECT COALESCE(SUM(t.amount_paid), 0) 
-                                FROM transactions t JOIN days d ON t.day_id = d.id 
-                                WHERE d.date = :date AND t.branch = :b AND t.is_collected = 0
-                            """), {"date": d_str, "b": b_name}).fetchone()[0]
-                            
-                            d_exp = conn.execute(text("""
-                                SELECT COALESCE(SUM(amount), 0) 
-                                FROM expenses 
-                                WHERE branch = :b AND (day_id IN (SELECT id FROM days WHERE date = :date) OR date = :date) 
-                                AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
-                            """), {"date": d_str, "b": b_name}).fetchone()[0]
-                        
-                        net_day_cash = float(d_sales) - float(d_exp)
+                        d_exp = conn.execute(text("""
+                            SELECT COALESCE(SUM(amount), 0) 
+                            FROM expenses 
+                            WHERE branch = :b AND (day_id IN (SELECT id FROM days WHERE date = :date) OR date = :date) 
+                            AND category = 'نثريات وتشغيل' AND paid_from = 'drawer'
+                        """), {"date": d_str, "b": b_name}).fetchone()[0]
+                    
+                    net_day_cash = float(d_sales) - float(d_exp)
+                    total_branch_pending_cash += net_day_cash
+                    
+                    days_calc_list.append({
+                        "date": d_str,
+                        "day_name": arabic_day_name,
+                        "sales": float(d_sales),
+                        "expenses": float(d_exp),
+                        "net": net_day_cash
+                    })
+
+                # عرض إجمالي العهدة المعلقة في عنوان الـ Expander
+                with st.expander(f"🏢 فرع {b_name} | إجمالي العهدة المعلقة: **{total_branch_pending_cash:,.0f} ج.م** ({len(days_calc_list)} أيام معلقة)", expanded=True):
+                    
+                    for item in days_calc_list:
+                        d_str = item["date"]
+                        arabic_day_name = item["day_name"]
+                        net_day_cash = item["net"]
+                        d_sales = item["sales"]
+                        d_exp = item["expenses"]
                         
                         col_info, col_btn = st.columns([3, 1])
                         with col_info:
-                            st.markdown(f"📅 **يوم {arabic_day_name}** ({d_str}) &nbsp; | &nbsp; الصافي بالدرج: **{net_day_cash:,.0f} ج.م** &nbsp; `(مبيعات: {float(d_sales):,.0f} - نثريات: {float(d_exp):,.0f})`")
+                            st.markdown(f"📅 **يوم {arabic_day_name}** ({d_str}) &nbsp; | &nbsp; الصافي بالدرج: **{net_day_cash:,.0f} ج.م** &nbsp; `(مبيعات: {d_sales:,.0f} - نثريات: {d_exp:,.0f})`")
                         
                         with col_btn:
                             if st.button(f"توريد يوم {arabic_day_name}", key=f"btn_day_{b_name}_{d_str}", use_container_width=True):
