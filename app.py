@@ -1057,7 +1057,7 @@ elif role == "admin":
                         with st.form(f"settle_form_{ev['id']}"):
                             c_b, c_p = st.columns(2)
                             with c_b:
-                                default_idx = 0 if ev.get('device') == '9A' else 1
+                                default_idx = 0 if ev.get('device'] == '9A' else 1
                                 settle_branch = st.selectbox("🏢 خصم الورق من عهدة فرع:", ["9A", "Heaven", "Warehouse"], index=default_idx, key=f"b_{ev['id']}")
                             with c_p:
                                 in_prints = c_p.number_input("الورق المستهلك:", min_value=0, max_value=2000, value=50, step=10, key=f"p_{ev['id']}")
@@ -1315,10 +1315,10 @@ elif role == "admin":
         day_kpi3.metric("📅 أيام الشهر الكلية", f"{total_days_in_month} يوم")
 
         # ==============================================================
-        # القسم الجديد: تصفية وتوريد عهدة الفروع بالأيام (زرار لكل يوم)
+        # قسم توريد عهدة الفروع بالأيام (مع كتابة اسم اليوم جنب التاريخ)
         # ==============================================================
         st.markdown("---")
-        st.subheader("📥 تصفية وتوريد عهدة الفروع (زرار لكل يوم)")
+        st.subheader("📥 تصفية وتوريد عهدة الفروع (الأيام الكاملة)")
         b_list = ["9A", "Heaven"] if selected_branch == "الكل" else ([selected_branch] if selected_branch in ["9A", "Heaven"] else [])
         has_pending_days = False
 
@@ -1340,6 +1340,11 @@ elif role == "admin":
                     for _, d_row in pending_days_df.iterrows():
                         d_str = d_row['date']
                         
+                        # حساب اسم اليوم بالعربي بناءً على التاريخ
+                        dt_obj = datetime.strptime(d_str, "%Y-%m-%d")
+                        eng_day_name = dt_obj.strftime("%A")
+                        arabic_day_name = ARABIC_DAYS.get(eng_day_name, eng_day_name)
+                        
                         with engine.connect() as conn:
                             d_sales = conn.execute(text("""
                                 SELECT COALESCE(SUM(t.amount_paid), 0) 
@@ -1358,10 +1363,10 @@ elif role == "admin":
                         
                         col_info, col_btn = st.columns([3, 1])
                         with col_info:
-                            st.markdown(f"📅 **يوم {d_str}** &nbsp; | &nbsp; الصافي بالدرج: **{net_day_cash:,.0f} ج.م** &nbsp; `(مبيعات: {float(d_sales):,.0f} - نثريات: {float(d_exp):,.0f})`")
+                            st.markdown(f"📅 **يوم {arabic_day_name}** ({d_str}) &nbsp; | &nbsp; الصافي بالدرج: **{net_day_cash:,.0f} ج.م** &nbsp; `(مبيعات: {float(d_sales):,.0f} - نثريات: {float(d_exp):,.0f})`")
                         
                         with col_btn:
-                            if st.button(f"توريد يوم {d_str}", key=f"btn_day_{b_name}_{d_str}", use_container_width=True):
+                            if st.button(f"توريد يوم {arabic_day_name}", key=f"btn_day_{b_name}_{d_str}", use_container_width=True):
                                 now_str = get_egypt_now_str()
                                 today_str = get_egypt_today_str()
                                 
@@ -1383,10 +1388,10 @@ elif role == "admin":
                                             VALUES (:ts, :date, 'collection', :amount, :src, :notes)
                                         """), {
                                             "ts": now_str, "date": today_str, "amount": net_day_cash, 
-                                            "src": f"فرع {b_name}", "notes": f"توريد عهدة يوم كامل ({d_str})"
+                                            "src": f"فرع {b_name}", "notes": f"توريد عهدة يوم كامل ({arabic_day_name} - {d_str})"
                                         })
                                 
-                                st.success(f"تم توريد يوم {d_str} بالكامل بنجاح!")
+                                st.success(f"تم توريد يوم {arabic_day_name} ({d_str}) بالكامل بنجاح!")
                                 st.rerun()
 
         if not has_pending_days:
