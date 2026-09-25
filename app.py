@@ -172,6 +172,11 @@ def get_db_engine():
     try:
         if "DATABASE_URL" in st.secrets:
             url = st.secrets["DATABASE_URL"]
+            # Fix for SQLAlchemy default driver mismatch with psycopg2-binary
+            if url.startswith("postgres://"):
+                url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+            elif url.startswith("postgresql://"):
+                url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
         else:
             url = "sqlite:///photobooth.db"
     except Exception:
