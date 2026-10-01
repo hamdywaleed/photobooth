@@ -1125,8 +1125,8 @@ elif role == "admin":
         with top_f1:
             selected_branch = st.selectbox("🏢 نطاق التحليل:", ["الكل", "Heaven", "9A", "Events"])
         with top_f2:
-            date_range = st.date_input("📅 الفترة الزمنية:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-
+            first_day_of_month = date.today().replace(day=1)
+            date_range = st.date_input("📅 الفترة الزمنية:", value=(first_day_of_month, max_date), min_value=min_date, max_value=max_date)
         if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
             start_dt, end_dt = date_range
             mask_tx = (pd.to_datetime(all_tx_raw['date']).dt.date >= start_dt) & (pd.to_datetime(all_tx_raw['date']).dt.date <= end_dt) if not all_tx_raw.empty else pd.Series(dtype=bool)
