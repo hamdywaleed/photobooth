@@ -1126,7 +1126,7 @@ elif role == "admin":
             selected_branch = st.selectbox("🏢 نطاق التحليل:", ["الكل", "Heaven", "9A", "Events"])
         with top_f2:
             today_date = date.today()
-            first_day_of_month = today_date.replace(day=1
+            first_day_of_month = today_date.replace(day=1)
             safe_max_date = max(max_date, today_date)
             date_range = st.date_input("📅 الفترة الزمنية:", value=(first_day_of_month, today_date), min_value=min_date, max_value=safe_max_date)
         if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
