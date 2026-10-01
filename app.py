@@ -361,11 +361,16 @@ def get_current_stock(target: str):
         return res[0] if res else 0
 
 def get_waste_count(branch_name: str = None):
-    # نجيب الشهر الحالي بناءً على توقيت مصر اللي انت معرفه
-    current_month = get_egypt_now().strftime("%Y-%m") 
+    egypt_now = get_egypt_now()
+    business_now = egypt_now - timedelta(hours=4)
     
-    query = "SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'waste' AND timestamp LIKE :m"
-    params = {"m": f"{current_month}%"}
+    # حساب بداية الشهر التجاري (يوم 1) ثم إضافة 4 ساعات لنصل لوقت الواقع
+    month_start_business = business_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start_actual = month_start_business + timedelta(hours=4)
+    start_str = month_start_actual.strftime("%Y-%m-%d %H:%M:%S")
+    
+    query = "SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'waste' AND timestamp >= :start_dt"
+    params = {"start_dt": start_str}
     
     if branch_name and branch_name != "الكل":
         query += " AND branch = :b"
@@ -376,9 +381,15 @@ def get_waste_count(branch_name: str = None):
         return res[0] if res else 0
 
 def get_free_count(branch_name: str = None):
-    current_month = get_egypt_now().strftime("%Y-%m")
-    query = "SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'free' AND timestamp LIKE :m"
-    params = {"m": f"{current_month}%"}
+    egypt_now = get_egypt_now()
+    business_now = egypt_now - timedelta(hours=4)
+    
+    month_start_business = business_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start_actual = month_start_business + timedelta(hours=4)
+    start_str = month_start_actual.strftime("%Y-%m-%d %H:%M:%S")
+    
+    query = "SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'free' AND timestamp >= :start_dt"
+    params = {"start_dt": start_str}
     
     if branch_name and branch_name != "الكل":
         query += " AND branch = :b"
@@ -387,7 +398,6 @@ def get_free_count(branch_name: str = None):
     with engine.connect() as conn:
         res = conn.execute(text(query), params).fetchone()
         return res[0] if res else 0
-
 
 def get_ink_refills(target: str):
     with engine.connect() as conn:
