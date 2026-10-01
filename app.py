@@ -361,20 +361,33 @@ def get_current_stock(target: str):
         return res[0] if res else 0
 
 def get_waste_count(branch_name: str = None):
+    # نجيب الشهر الحالي بناءً على توقيت مصر اللي انت معرفه
+    current_month = get_egypt_now().strftime("%Y-%m") 
+    
+    query = "SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'waste' AND timestamp LIKE :m"
+    params = {"m": f"{current_month}%"}
+    
+    if branch_name and branch_name != "الكل":
+        query += " AND branch = :b"
+        params["b"] = branch_name
+        
     with engine.connect() as conn:
-        if branch_name and branch_name != "الكل":
-            res = conn.execute(text("SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'waste' AND branch = :b"), {"b": branch_name}).fetchone()
-        else:
-            res = conn.execute(text("SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'waste'")).fetchone()
+        res = conn.execute(text(query), params).fetchone()
         return res[0] if res else 0
 
 def get_free_count(branch_name: str = None):
+    current_month = get_egypt_now().strftime("%Y-%m")
+    query = "SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'free' AND timestamp LIKE :m"
+    params = {"m": f"{current_month}%"}
+    
+    if branch_name and branch_name != "الكل":
+        query += " AND branch = :b"
+        params["b"] = branch_name
+        
     with engine.connect() as conn:
-        if branch_name and branch_name != "الكل":
-            res = conn.execute(text("SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'free' AND branch = :b"), {"b": branch_name}).fetchone()
-        else:
-            res = conn.execute(text("SELECT ABS(COALESCE(SUM(quantity), 0)) FROM inventory WHERE action_type = 'free'")).fetchone()
+        res = conn.execute(text(query), params).fetchone()
         return res[0] if res else 0
+
 
 def get_ink_refills(target: str):
     with engine.connect() as conn:
